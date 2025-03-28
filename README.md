@@ -53,7 +53,7 @@ DataRoot/
 1. Clone the repository:
    ```bash
    git clone https://github.com/UygarUsta/centernet_ciou_iou_aware_pl.git
-   cd your-repo-name
+   cd centernet_ciou_iou_aware_pl
    ```
 
 2. Prepare your dataset following the structure mentioned above.
