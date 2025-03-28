@@ -62,7 +62,7 @@ DataRoot/
 
 4. Run the training script:
    ```bash
-   python train.py --data_dir /path/to/DataRoot
+   python train_lightning.py --data_dir /path/to/DataRoot
    ```
 
 ---
