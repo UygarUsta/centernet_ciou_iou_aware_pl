@@ -5,9 +5,203 @@ import openvino as ov
 from torchvision.ops import nms
 import torch.nn as nn 
 import time 
+from dataloader import cvtColor
+from PIL import Image 
 
-input_width = 224
-input_height = 224
+def pool_nms(heat, kernel=3):
+    """Efficient max pooling-based NMS."""
+    pad = (kernel - 1) // 2
+    hmax = nn.functional.max_pool2d(heat, (kernel, kernel), stride=1, padding=pad)
+    keep = (hmax == heat).float()
+    return heat * keep
+
+def decode_bbox_fast(pred_hms, pred_whs, pred_offsets, pred_ious=None, confidence=0.3, cuda=True):
+    """Faster implementation of bbox decoding."""
+    # Apply non-maximum suppression to heatmaps
+    pred_hms = pool_nms(pred_hms)
+    
+    b, c, output_h, output_w = pred_hms.shape
+    detects = []
+    
+    # Create coordinate grid once (shared across batch)
+    yv, xv = torch.meshgrid(torch.arange(0, output_h), torch.arange(0, output_w))
+    xv, yv = xv.flatten().float(), yv.flatten().float()
+    if cuda:
+        xv = xv.cuda()
+        yv = yv.cuda()
+    
+    # Process each image in batch
+    for batch in range(b):
+        # Reshape tensors for efficient processing
+        heat_map = pred_hms[batch].permute(1, 2, 0).reshape(-1, c)
+        pred_wh = pred_whs[batch].permute(1, 2, 0).reshape(-1, 2)
+        pred_offset = pred_offsets[batch].permute(1, 2, 0).reshape(-1, 2)
+        
+        # Get class confidence and predictions
+        class_conf, class_pred = torch.max(heat_map, dim=-1)
+        mask = class_conf > confidence
+        
+        # Skip if no detections pass confidence threshold
+        if not mask.any():
+            detects.append([])
+            continue
+        
+        # Get IoU map if available
+        if pred_ious is not None:
+            iou_map = pred_ious[batch]
+            if iou_map.dim() == 3 and iou_map.shape[0] == 1:
+                iou_map = iou_map.squeeze(0)
+            iou_map = iou_map.reshape(-1)
+            iou_mask = iou_map[mask]
+        else:
+            iou_mask = None
+        
+        # Filter by mask
+        pred_wh_mask = pred_wh[mask]
+        pred_offset_mask = pred_offset[mask]
+        xv_mask = xv[mask] + pred_offset_mask[..., 0]
+        yv_mask = yv[mask] + pred_offset_mask[..., 1]
+        
+        # Calculate bbox coordinates (vectorized)
+        half_w, half_h = pred_wh_mask[:, 0:1] / 2, pred_wh_mask[:, 1:2] / 2
+        
+        # Create bboxes directly without unnecessary concatenation
+        bboxes = torch.zeros((xv_mask.size(0), 4), device=xv_mask.device)
+        bboxes[:, 0] = (xv_mask - half_w.squeeze(-1)) / output_w
+        bboxes[:, 1] = (yv_mask - half_h.squeeze(-1)) / output_h
+        bboxes[:, 2] = (xv_mask + half_w.squeeze(-1)) / output_w
+        bboxes[:, 3] = (yv_mask + half_h.squeeze(-1)) / output_h
+        
+        # Calculate final confidence
+        if iou_mask is not None:
+            final_conf = class_conf[mask] * iou_mask
+        else:
+            final_conf = class_conf[mask]
+            
+        # Create detection results
+        detect = torch.cat([
+            bboxes,
+            final_conf.unsqueeze(-1),
+            class_pred[mask].float().unsqueeze(-1)
+        ], dim=-1)
+        
+        detects.append(detect)
+    
+    return detects
+
+def centernet_correct_boxes_fast(boxes, input_shape, image_shape, letterbox_image):
+    """Optimized version of box correction."""
+    # Convert to numpy arrays for consistency with original function
+    input_shape = np.array(input_shape)
+    image_shape = np.array(image_shape)
+    
+    # Extract coordinates
+    x1, y1, x2, y2 = boxes[:, 0:1], boxes[:, 1:2], boxes[:, 2:3], boxes[:, 3:4]
+    
+    # Calculate centers and dimensions
+    box_xy = np.concatenate([(x1 + x2) / 2, (y1 + y2) / 2], axis=-1)
+    box_wh = np.concatenate([x2 - x1, y2 - y1], axis=-1)
+    
+    # Switch to yx format for processing
+    box_yx = box_xy[:, ::-1]
+    box_hw = box_wh[:, ::-1]
+    
+    if letterbox_image:
+        # Calculate letterbox adjustments
+        new_shape = np.round(image_shape * np.min(input_shape / image_shape))
+        offset = (input_shape - new_shape) / 2. / input_shape
+        scale = input_shape / new_shape
+        
+        # Apply letterbox adjustments
+        box_yx = (box_yx - offset) * scale
+        box_hw *= scale
+    
+    # Calculate box corners
+    box_mins = box_yx - (box_hw / 2.)
+    box_maxes = box_yx + (box_hw / 2.)
+    
+    # Format boxes and scale to image dimensions
+    boxes = np.concatenate([
+        box_mins[:, 0:1], box_mins[:, 1:2],
+        box_maxes[:, 0:1], box_maxes[:, 1:2]
+    ], axis=-1)
+    boxes *= np.concatenate([image_shape, image_shape], axis=-1)
+    
+    return boxes
+
+def postprocess_fast(prediction, need_nms, image_shape, input_shape, letterbox_image, nms_thres=0.4):
+    """Faster implementation of postprocessing."""
+    batch_size = len(prediction)
+    output = [None] * batch_size
+    
+    for i, detections in enumerate(prediction):
+        if len(detections) == 0:
+            continue
+            
+        # Process on GPU when possible
+        if isinstance(detections, torch.Tensor):
+            is_cuda = detections.is_cuda
+            unique_labels = detections[:, -1].cpu().unique()
+            if is_cuda:
+                unique_labels = unique_labels.cuda()
+                
+            # Process each class
+            for c in unique_labels:
+                # Get detections for this class
+                detections_class = detections[detections[:, -1] == c]
+                
+                if need_nms:
+                    # Use torchvision's NMS which is faster
+                    keep = nms(
+                        detections_class[:, :4],
+                        detections_class[:, 4],
+                        nms_thres
+                    )
+                    max_detections = detections_class[keep]
+                else:
+                    max_detections = detections_class
+                
+                # Add to output
+                output[i] = max_detections if output[i] is None else torch.cat((output[i], max_detections))
+        
+        # Convert to numpy and apply box correction
+        if output[i] is not None:
+            output[i] = output[i].cpu().numpy()
+            
+            # Apply box correction
+            output[i][:, :4] = centernet_correct_boxes_fast(
+                output[i][:, :4], 
+                input_shape, 
+                image_shape, 
+                letterbox_image
+            )
+    
+    return output
+
+
+
+class Colors:
+    # Ultralytics color palette https://ultralytics.com/
+    def __init__(self):
+        # hex = matplotlib.colors.TABLEAU_COLORS.values()
+        hexs = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
+                '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
+        self.palette = [self.hex2rgb(f'#{c}') for c in hexs]
+        self.n = len(self.palette)
+
+    def __call__(self, i, bgr=False):
+        c = self.palette[int(i) % self.n]
+        return (c[2], c[1], c[0]) if bgr else c
+
+    @staticmethod
+    def hex2rgb(h):  # rgb order (PIL)
+        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+
+
+colors = Colors() 
+
+input_width = 512
+input_height = 512
 
 def pool_nms(heat, kernel = 3):
     pad = (kernel - 1) // 2
@@ -126,12 +320,13 @@ print(classes)
 trace = False
 
 DEVICE = "cpu"
-from hardnet import get_pose_net
-device = "cuda"
-conf = 0.4
-model_path = "best_epoch_weights.pth"
-model = get_pose_net(85,{"hm":len(classes),"wh":4})
+from mbv4_timm import CenterNet
+model = CenterNet(nc=len(classes))
+device = "cpu"
+model_path = "/home/rivian/Desktop/centernet_ciou_iou_aware_pl/lightning_logs/centernet/version_0/checkpoints/best_model_mAP_0.4819.pth"
 model = load_model(model,model_path).to(DEVICE).eval()
+
+
 
 if trace:
     dummy_input = torch.randn(1, 3, input_height, input_width).to(device)
@@ -144,134 +339,239 @@ dummy_input = torch.randn(1, 3, input_height, input_width).to(DEVICE)
 model =  ov.compile_model(ov.convert_model(model, example_input=dummy_input))
 
 
-def inference_video(image, classes, stride=4, confidence=0.45, nms_iou=0.3):
-    """
-    Inference on a single image using a CenterNet-style approach
-    with a [left, top, right, bottom] offset scheme.
 
-    Args:
-        image_path (str) : Path to the image file
-        classes (list)   : List of class names
-        stride (int)     : Downsample stride between input and feature maps
-        confidence (float): Threshold to filter out low-confidence center points
-        nms_iou (float)  : IoU threshold for NMS
-
-    Returns:
-        pred_reg_mask (tensor): The regression offsets that pass threshold (debugging)
-    """
+def infer_image(model, img, classes, stride=4, confidence=0.35, half=False, input_shape=(512, 512), cpu=False, openvino_exp=False):
+    # Device setup - moved outside function if possible
+    device = torch.device("cpu" if cpu else "cuda")
+    cuda = not cpu
+    
+    # Start timing
     #fps1 = time.time()
+    
+    # More efficient image handling
+    if isinstance(img, str):
+        image = Image.open(img)
+    else:
+        image = img
+    
+    # Cache image shape once
+    image_shape = np.array(image.shape[:2] if hasattr(image, 'shape') else image.size[::-1])
+    
+    # Convert image format efficiently
+    image = cvtColor(image)
+    
+    # Use faster resize method
+    image_data = resize_numpy(image, input_shape, letterbox_image=False)
+    
+    # Optimize preprocessing with vectorized operations
+    image_data = np.expand_dims(np.transpose(preprocess_input(np.array(image_data, dtype='float32')), (2, 0, 1)), 0)
+    image = np.array(image)
+    # Calculate rectangle parameters once
+    lf = max(round(sum(image_shape) / 2 * 0.003), 2)
+    tf = max(lf - 1, 1)
+    
+    # Convert to numpy array if needed
+    if not isinstance(image, np.ndarray):
+        image = np.array(image)
+    
+    box_annos = []
+    try:
+        # Model inference with optimized memory usage
+        with torch.no_grad():
+            # Convert to tensor once and reuse
+            images = torch.from_numpy(image_data).to(device, dtype=torch.float16 if half else torch.float32)
+            
+            # Run inference
+            if not openvino_exp:
+                hm, wh, offset, iou_pred = model(images)
+            else:
+                output = model(images)
+                hm = torch.tensor(output[0])
+                wh = torch.tensor(output[1])
+                offset = torch.tensor(output[2])
+                iou_pred = torch.tensor(output[3])
+        pf1 = time.time()
+        # Decode bounding boxes
+        outputs = decode_bbox_fast(hm, wh, offset, iou_pred, confidence=confidence, cuda=cuda)
+        
+        # Post-processing
+        results = postprocess_fast(outputs, True, image_shape, input_shape, False, 0.3)
+        pf2 = time.time()
+        print(f"Postprocessing time is: {pf2-pf1}")
+        
+        # Batch drawing operations for better performance
+        if results[0] is not None and len(results[0]) > 0:
+            for det in results[0]:
+                xmin, ymin = int(det[1]), int(det[0])
+                xmax, ymax = int(det[3]), int(det[2])
+                conf = float(det[4])
+                class_label = int(det[5])
+                box = [ymin, xmin, ymax, xmax]
+                name = f'{classes[class_label]} {conf:.2f}'
+                box_annos.append([xmin, ymin, xmax, ymax, name, conf])
+                
+                # Draw rectangle
+                color = colors(class_label, True)
+                cv2.rectangle(image, (xmin, ymin), (xmax, ymax), color, lf)
+                
+                # Draw text more efficiently
+                cv2.putText(image, name, (xmin-3, ymin), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
+                
+    except Exception as e:
+        print(f"Exception: {e}")
+    
+    # Calculate FPS
+    #fps2 = time.time()
+    #fps = 1 / (fps2 - fps1)
+    #cv2.putText(image, f'FPS:{fps:.2f}', (200, 100), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 0, 255), 2)
+    
+    return image, box_annos
+
+
+
+def inference_video_ciou(image, classes, stride=4, confidence=0.45, nms_iou=0.3,use_iou=True):
+    """
+    Optimized inference for CenterNet with CIoU awareness.
+    
+    Args:
+        image (str or ndarray): Path to image or image array
+        classes (list): List of class names
+        stride (int): Downsample stride between input and feature maps
+        confidence (float): Threshold to filter out low-confidence center points
+        nms_iou (float): IoU threshold for NMS
+        
+    Returns:
+        bboxes (list): List of [xmin, ymin, xmax, ymax, score, cls_id]
+        image_ (ndarray): Copy of input image for visualization
+    """
     # Read and preprocess the image
-    if type(image) == str:
+    if isinstance(image, str):
         img_bgr = cv2.imread(image)
     else:
         img_bgr = image
-    image   = resize_numpy(img_bgr, (input_width, input_height),letterbox_image=False) #cv2.resize(img_bgr, (input_width, input_height))
-    image_  = image.copy()  # For visualization
-    image   = preprocess_input(image)
+    
+    # Resize image without letterboxing for speed
+    image = resize_numpy(img_bgr, (input_width, input_height), letterbox_image=False)
+    image_ = image.copy()  # For visualization
+    image = preprocess_input(image)
 
-    # Convert to torch tensor (C, H, W) on GPU
+    # Convert to torch tensor (C, H, W) on GPU - single batch
     image_tensor = torch.tensor(image, dtype=torch.float32).to(DEVICE).permute(2, 0, 1).unsqueeze(0)
-    #fpre = time.time()
-    #print(f"Preprocessing took: {fpre - fps1} ms")
-    #f1 = time.time()
+    
+    # Model inference
     with torch.no_grad():
-        pred = model(image_tensor)  # forward pass
-    #f2 = time.time()
-    #print(f"Model inference time: {f2-f1} ms")
-    #fp1 = time.time()
-    hm =  pred[0]  # Heatmap and Regression outputs
-    reg = pred[1]
-    hm = torch.tensor(hm)
-    reg = torch.tensor(reg)
+        pred = model(image_tensor)
     
-    #hm_dist = hm[:,-1,:,:].unsqueeze(0)
-    #hm = hm[:,:-1,:,:]
-    #hm = torch.sigmoid(hm)  # apply sigmoid to heatmap
+    # Extract predictions
+    pred_hms = torch.tensor(pred[0])  # Heatmap outputs
+    pred_whs = torch.tensor(pred[1])  # Width/Height outputs
+    pred_offsets = torch.tensor(pred[2])  # Offset outputs
+    pred_ious = torch.tensor(pred[3]) #[None]  # IoU awareness outputs
+
     
-    # Convert heatmap to numpy just for visualization of the first channel
-    #hm_np = hm.permute(0, 2, 3, 1).numpy()
-    #hm_np = np.squeeze(hm_np, 0)  # shape: (H, W, num_classes)
-
-    # pool_nms is presumably your local-maxima function on the heatmap
-    # Make sure you apply it on 'hm' (PyTorch tensor) not 'hm_np'
-    hm = pool_nms(hm)  # shape: (B, num_classes, H, W)
-
-    b, c, output_h, output_w = hm.shape
+    # Apply sigmoid to heatmap if not already applied in model
+    # pred_hms = torch.sigmoid(pred_hms)
+    
+    # Apply pool NMS to get local maxima
+    pred_hms = pool_nms(pred_hms)
+    
+    # Get output dimensions
+    b, c, output_h, output_w = pred_hms.shape
+    
+    # Generate coordinate grid once (more efficient)
+    yv, xv = torch.meshgrid(
+        torch.arange(0, output_h, dtype=torch.float32, device=DEVICE),
+        torch.arange(0, output_w, dtype=torch.float32, device=DEVICE)
+    )
+    xv = xv.flatten()  # (H*W,)
+    yv = yv.flatten()  # (H*W,)
+    
+    # Process batch (usually just one image)
     detects = []
-
+    
     for batch_i in range(b):
-        # Flatten heatmap and regression for easier indexing
-        heat_map  = hm[batch_i].permute(1, 2, 0).view(-1, c)        # (H*W, num_classes)
-        pred_reg_ = reg[batch_i].permute(1, 2, 0).view(-1, 4)       # (H*W, 4)
-        #pred_dist = hm_dist[batch_i].permute(1, 2, 0).view(-1, 1)
-        # Generate a grid of indices to locate each pixel in feature space
-        yv, xv = torch.meshgrid(
-            torch.arange(0, output_h, dtype=torch.float32),
-            torch.arange(0, output_w, dtype=torch.float32)
-        )
-        xv = xv.flatten() #.cuda()  # (H*W,)
-        yv = yv.flatten() #.cuda()  # (H*W,)
-
-        # Find the class with the highest score at each pixel
+        # Flatten predictions for easier processing
+        heat_map = pred_hms[batch_i].permute(1, 2, 0).reshape(-1, c)  # (H*W, num_classes)
+        pred_wh = pred_whs[batch_i].permute(1, 2, 0).reshape(-1, 2)  # (H*W, 2)
+        pred_offset = pred_offsets[batch_i].permute(1, 2, 0).reshape(-1, 2)  # (H*W, 2)
+        
+        # Extract IoU awareness - handle different possible shapes
+        if pred_ious.dim() == 4 and use_iou:
+            # Shape [B, 1, H, W] or [B, C, H, W]
+            iou_map = pred_ious[batch_i]
+            if iou_map.dim() == 3 and iou_map.shape[0] == 1:
+                iou_map = iou_map.squeeze(0)  # [H, W]
+            elif iou_map.dim() == 3:
+                # Multiple IoU maps (one per class)
+                iou_map = iou_map.permute(1, 2, 0)  # [H, W, C]
+            iou_map = iou_map.reshape(-1) if iou_map.dim() == 2 else iou_map.reshape(-1, c)
+        else:
+            iou_map = None
+        
+        # Find the class with highest confidence at each point
         class_conf, class_pred = torch.max(heat_map, dim=-1)  # (H*W,) each
-
+        
         # Apply confidence threshold
         mask = class_conf > confidence
-
-        # Filter out only the pixels above the threshold
-        pred_reg_mask = pred_reg_[mask]  # shape: (M, 4)
-        #pred_dist_mask = pred_dist[mask]
-        scores_mask    = class_conf[mask]
-        classes_mask   = class_pred[mask]
-
-        if len(pred_reg_mask) == 0:
-                detects.append([])
-                continue  
-
-        # Decode bounding boxes from offsets
-        # According to your dataset code:
-        # batch_reg[..., 0] = left_offset
-        # batch_reg[..., 1] = top_offset
-        # batch_reg[..., 2] = right_offset
-        # batch_reg[..., 3] = bottom_offset
-        left_offset   = pred_reg_mask[:, 0]
-        top_offset    = pred_reg_mask[:, 1]
-        right_offset  = pred_reg_mask[:, 2]
-        bottom_offset = pred_reg_mask[:, 3]
-
-        # Convert center coords from feature space -> input space
-        x_center = xv[mask] * stride
-        y_center = yv[mask] * stride
-
-        # Now compute x_min, y_min, x_max, y_max
-        x_min = x_center - left_offset   * stride
-        y_min = y_center - top_offset    * stride
-        x_max = x_center + right_offset  * stride
-        y_max = y_center + bottom_offset * stride
         
-        #distance = pred_dist_mask[:,0].float().unsqueeze(-1)
-
-        # Concatenate for NMS: [x_min, y_min, x_max, y_max, score, class_id]
-        bboxes  = torch.stack([x_min, y_min, x_max, y_max], dim=-1)
-        scores  = scores_mask.unsqueeze(-1)
-        c_ids   = classes_mask.float().unsqueeze(-1)
-
-        detect = torch.cat([bboxes, scores, c_ids], dim=-1)  # shape: (M, 6)
+        # Skip if no detections pass threshold
+        if not mask.any():
+            detects.append([])
+            continue
+        # Filter predictions by mask
+        pred_wh_mask = pred_wh[mask]  # (N, 2)
+        pred_offset_mask = pred_offset[mask]  # (N, 2)
+        # Get IoU-aware confidence if available
+        if iou_map is not None:
+            if iou_map.dim() == 1:
+                # Single IoU map
+                iou_mask = iou_map[mask]  # (N,)
+                final_conf = class_conf[mask] * iou_mask
+            else:
+                # Per-class IoU maps
+                class_indices = class_pred[mask].unsqueeze(1).long()  # (N, 1)
+                iou_mask = torch.gather(iou_map[mask], 1, class_indices).squeeze(1)  # (N,)
+                final_conf = class_conf[mask] * iou_mask
+        else:
+            final_conf = class_conf[mask]
+        
+        # Get center coordinates from feature map
+        xv_mask = xv[mask] + pred_offset_mask[..., 0]  # (N,)
+        yv_mask = yv[mask] + pred_offset_mask[..., 1]  # (N,)
+        
+        # Calculate bbox dimensions
+        half_w, half_h = pred_wh_mask[..., 0] / 2, pred_wh_mask[..., 1] / 2
+        
+        # Calculate bbox coordinates directly (vectorized)
+        x_min = (xv_mask - half_w) * stride
+        y_min = (yv_mask - half_h) * stride
+        x_max = (xv_mask + half_w) * stride
+        y_max = (yv_mask + half_h) * stride
+        
+        # Stack bbox coordinates
+        bboxes = torch.stack([x_min, y_min, x_max, y_max], dim=-1)  # (N, 4)
+        
+        # Create detection tensor with all info
+        detect = torch.cat([
+            bboxes,
+            final_conf.unsqueeze(-1),
+            class_pred[mask].float().unsqueeze(-1)
+        ], dim=-1)  # (N, 6)
+        
         detects.append(detect)
-
-    # For single-batch inference, we only look at detects[0]
-    # Format: [x_min, y_min, x_max, y_max, score, class_id]
+    
+    # Process detections (for single batch)
     all_detections = detects[0]
+    
+    # Apply NMS if we have any detections
     if len(all_detections) > 0:
-        # NMS on CPU or GPU
+        # Use torchvision's optimized NMS
         keep_indices = nms(all_detections[:, :4], all_detections[:, 4], nms_iou)
-        final_dets   = all_detections[keep_indices]
+        final_dets = all_detections[keep_indices]
     else:
         final_dets = all_detections
-
-    #fp2 = time.time()
-    #print(f"Postprocessing took: {fp2-fp1} ms")
-    # Draw results
+    
+    # Convert to original image coordinates
     bboxes = []
     for det in final_dets:
         xmin = int(det[0]) * img_bgr.shape[1] // input_width
@@ -280,31 +580,9 @@ def inference_video(image, classes, stride=4, confidence=0.45, nms_iou=0.3):
         ymax = int(det[3]) * img_bgr.shape[0] // input_height
         score = float(det[4])
         cls_id = int(det[5])
-        #distance = float(det[6])
-        bboxes.append([xmin,ymin,xmax,ymax,score,cls_id])
-
-        # cv2.rectangle(image_, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-        # cv2.putText(
-        #     image_,
-        #     f"{classes[cls_id]}: {score:.2f} d:{distance}",
-        #     (xmin, ymin - 5),
-        #     cv2.FONT_HERSHEY_SIMPLEX,
-        #     0.5,
-        #     (0, 255, 0),
-        #     1,
-        # )
-
-    # Show the first channel of the heatmap (for debugging)
-    # plt.imshow(cv2.resize(hm_np[:, :, 0], (512, 512)))
-    # plt.title("Heatmap - First Class Channel")
-    # plt.show()
-
-    # # Show the detection results
-    # plt.imshow(cv2.cvtColor(image_, cv2.COLOR_BGR2RGB))
-    # plt.title("Detections")
-    # plt.show()
-
-    return bboxes,image_
+        bboxes.append([xmin, ymin, xmax, ymax, score, cls_id])
+    
+    return bboxes, image_
 
 video_path = "/home/rivian/Desktop/0010.mp4"
 cap = cv2.VideoCapture(video_path)
@@ -313,8 +591,10 @@ while 1:
     image_copy = image.copy()
     fps_start = time.time()
     image = image[...,::-1]
-    bboxes,image_anotated = inference_video(image,classes)
+    bboxes,image_anotated = inference_video_ciou(image, classes) #infer_image(model, image, classes)
     fps_end = time.time()
+    image_anotated = np.array(image_anotated)
+    
     image = image[...,::-1]
     for det in bboxes:
         xmin = np.clip(int(det[0]),0,image.shape[1]) 
