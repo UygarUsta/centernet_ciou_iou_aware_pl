@@ -319,7 +319,7 @@ class LightningCenterNet(pl.LightningModule):
                     
                     # Decode predictions
                     try:
-                        outputs = decode_bbox(hm,wh,offset,iou,confidence=0.005)
+                        outputs = decode_bbox(hm,wh,offset,iou,confidence=0.05)
                         
                         # Check if outputs is empty
                         if not outputs or len(outputs[0]) == 0:
