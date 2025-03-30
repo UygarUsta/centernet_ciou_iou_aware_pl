@@ -260,6 +260,9 @@ class LightningCenterNet(pl.LightningModule):
         """Run COCO evaluation on the model"""
         if not self.cocoGt or not self.classes:
             return 0.0
+
+        if self.current_epoch == 0:
+            return 0.0
         
         # Print some info about ground truth annotations
         print(f"COCO GT info: {len(self.cocoGt.imgs)} images, {len(self.cocoGt.anns)} annotations")
