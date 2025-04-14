@@ -68,7 +68,7 @@ def preprocess_input_simple(image):
     return image / 255. #(image / 255. - mean) / std
 
 class CenternetDataset(Dataset):
-    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4):
+    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4,mosaic=True, mixup=True):
         super(CenternetDataset, self).__init__()
         self.image_path = image_path
         self.length = len(self.image_path)
@@ -77,7 +77,11 @@ class CenternetDataset(Dataset):
         self.output_shape = (input_shape[0] // self.stride, input_shape[1] // self.stride)
         self.classes = classes
         self.num_classes = num_classes
-        self.train = train
+        self.train = train,
+        self.mosaic = mosaic and train,
+        self.mixup = mixup and train
+        
+    
 
     def __len__(self):
         return self.length
@@ -86,19 +90,23 @@ class CenternetDataset(Dataset):
 
         self.mixup_prob = 0.25
         self.mixup_alpha = np.random.uniform(0.3, 0.5)
+        self.mosaic_prob = 0.25
         
+        use_mosaic = self.mosaic and np.random.rand() < self.mosaic_prob
+        use_mixup = self.mixup and  np.random.rand() <  self.mixup_prob
+
         # Load initial image and boxes
-        if self.train and np.random.rand() < 0.25:
+        if use_mosaic:
             image, box = self.get_mosaic_data(index)
         else:
             image, box = self.get_random_data(self.image_path[index], self.input_shape, random=self.train)
 
         # Apply Mixup augmentation
-        if self.train and np.random.rand() < self.mixup_prob:
+        if use_mixup:
             # Randomly select another image
             index2 = np.random.randint(0, self.length)
             # Load second image and boxes (with possible mosaic)
-            if self.train and np.random.rand() < 0.5:
+            if use_mosaic:
                 image2, box2 = self.get_mosaic_data(index2)
             else:
                 image2, box2 = self.get_random_data(self.image_path[index2], self.input_shape, random=self.train)

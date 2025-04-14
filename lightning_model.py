@@ -3,6 +3,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from loss import focal_loss, ciou_loss,get_lr_scheduler,set_optimizer_lr,get_lr,iou_aware_loss,reg_l1_loss
 from mbv4_timm import CenterNet
+from lightning_datamodule import CenterNetDataModule
 from utils_bbox import decode_bbox, postprocess
 import numpy as np
 import json
@@ -13,6 +14,8 @@ from typing import Dict, List, Tuple, Optional, Any
 import cv2
 import glob 
 from torch.optim.lr_scheduler import LambdaLR
+from datetime import datetime
+import csv
 
 
 def decode_boxes_for_ciou(hm,offset, wh, batch_regs, batch_whs, batch_reg_masks, device_type='cuda'):
@@ -113,7 +116,7 @@ class LightningCenterNet(pl.LightningModule):
         val_data_path: Optional[str] = None,
         classes: Optional[List[str]] = None,
         ciou_weight: float = 5.0,
-        eval_interval: int = 5 
+        eval_interval: int = 5
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -145,6 +148,7 @@ class LightningCenterNet(pl.LightningModule):
         
         # Best mAP tracking
         self.best_map = 0.0
+ 
         
     def forward(self, x):
         return self.model(x)
@@ -222,7 +226,15 @@ class LightningCenterNet(pl.LightningModule):
             torch.save(self.model.state_dict(), temp_path)
             
             # Run COCO evaluation
-            mean_ap = self.evaluate_coco(temp_path)
+            coco_eval = self.evaluate_coco(temp_path)
+            if isinstance(coco_eval,COCOeval):
+                mean_ap = coco_eval.stats[0]  # This is the AP@[IoU=0.50:0.95]
+            else:
+                mean_ap = 0.0
+
+            # Log mAP to CSV
+            if self.current_epoch > 0:
+                self.log_map_to_csv(coco_eval)
             
             # Log mAP
             self.log('val_mAP', mean_ap, prog_bar=True)
@@ -255,8 +267,70 @@ class LightningCenterNet(pl.LightningModule):
         elif self.trainer.is_global_zero and self.cocoGt:
             pass
             #print(f"Skipping COCO evaluation at epoch {current_epoch} (will evaluate every {self.eval_interval} epochs)")
+
+    def log_map_to_csv(self, coco_eval):
+        """Log all COCO evaluation metrics to CSV file"""
+        # Create the CSV file path in the same directory as checkpoints
+        csv_path = os.path.join(self.logger.log_dir, "map_results.csv")
+        
+        # Check if file exists to determine if we need to write headers
+        file_exists = os.path.isfile(csv_path)
+        
+        # Get current date and time
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Define all the metrics we want to save
+        fieldnames = [
+            'epoch', 'date_time', 'learning_rate',
+            'AP_all', 'AP_50', 'AP_75', 'AP_small', 'AP_medium', 'AP_large',
+            'AR_1', 'AR_10', 'AR_100', 'AR_small', 'AR_medium', 'AR_large'
+        ]
+        
+        # Extract all metrics from coco_eval
+        metrics = {
+            'AP_all': coco_eval.stats[0],
+            'AP_50': coco_eval.stats[1],
+            'AP_75': coco_eval.stats[2],
+            'AP_small': coco_eval.stats[3],
+            'AP_medium': coco_eval.stats[4],
+            'AP_large': coco_eval.stats[5],
+            'AR_1': coco_eval.stats[6],
+            'AR_10': coco_eval.stats[7],
+            'AR_100': coco_eval.stats[8],
+            'AR_small': coco_eval.stats[9],
+            'AR_medium': coco_eval.stats[10],
+            'AR_large': coco_eval.stats[11]
+        }
+        
+        # Get current learning rate
+        current_lr = self.trainer.optimizers[0].param_groups[0]['lr'] if self.trainer.optimizers else 0
+        
+        # Open file in append mode
+        with open(csv_path, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header if file doesn't exist
+            if not file_exists:
+                writer.writeheader()
+            
+            # Create row with all metrics
+            row = {
+                'epoch': self.current_epoch,
+                'date_time': current_time,
+                'learning_rate': f"{current_lr:.8f}"
+            }
+            
+            # Add all metrics to the row
+            for metric_name, metric_value in metrics.items():
+                row[metric_name] = f"{metric_value:.6f}"
+            
+            # Write the row
+            writer.writerow(row)
+        
+        print(f"All COCO metrics logged to {csv_path}")
     
-    def evaluate_coco(self, model_path):
+    
+    def evaluate_coco(self,model_path):
         """Run COCO evaluation on the model"""
         if not self.cocoGt or not self.classes:
             return 0.0
@@ -407,7 +481,7 @@ class LightningCenterNet(pl.LightningModule):
             if hasattr(cocoEval, 'stats') and len(cocoEval.stats) > 0:
                 mean_ap = cocoEval.stats[0]  # mAP at IoU thresholds from .50 to .95
                 print(f"mAP: {mean_ap:.4f}")
-                return mean_ap
+                return cocoEval #mean_ap
             else:
                 print("COCO evaluation completed but stats are not available")
                 return 0.0
@@ -486,3 +560,11 @@ class LightningCenterNet(pl.LightningModule):
             current_lr = get_lr(self.optimizers())
             # Log the learning rate
             self.log('learning_rate', current_lr, prog_bar=True)
+
+        # Check if we're in the last 10 epochs
+        if self.trainer.max_epochs - self.current_epoch <= 10:
+            # Disable mosaic and mixup
+            if self.current_epoch == self.trainer.max_epochs - 10:
+                print(f"Epoch {self.current_epoch}: Disabling mosaic and mixup for final training")
+            if isinstance(self.trainer.datamodule, CenterNetDataModule):
+                self.trainer.datamodule.disable_augmentations()

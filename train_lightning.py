@@ -64,7 +64,9 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         stride=args.stride,
-        seed=args.seed
+        seed=args.seed,
+        mosaic = args.mosaic,
+        mixup = args.mixup
     )
     
     # Initialize model
@@ -153,7 +155,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train CenterNet with PyTorch Lightning")
     
     # Dataset parameters
-    parser.add_argument('--data_dir', type=str, default='E:/derpet_v4_label_tf',
+    parser.add_argument('--data_dir', type=str, default='/home/rivian/Desktop/Datasets/derpet_v4_label_tf',
                         help='Path to dataset directory')
     parser.add_argument('--coco_annotation_path', type=str, default='val_output_coco.json',
                         help='Path to COCO annotation file')
@@ -175,9 +177,11 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=8, help='Number of data loading workers')
     parser.add_argument('--fp16', default=True,action='store_true', help='Use mixed precision training')
     parser.add_argument('--seed', type=int, default=11, help='Random seed')
+    parser.add_argument('--mosaic',default=True, help='Applies Mosaic Augmentation'),
+    parser.add_argument('--mixup', default=True, help='Applies Mixup Augmentation')
     
     # Checkpointing and logging
-    parser.add_argument('--pretrained_weights', type=str, default='mbv4_cmini_0131map.pth', help='Path to pretrained weights')
+    parser.add_argument('--pretrained_weights', type=str, default='mbv4_centernet_ciouaware_best_model_mAP_0.1489_85ep.pth', help='Path to pretrained weights')
     parser.add_argument('--log_dir', type=str, default='lightning_logs', help='Directory for logs')
     parser.add_argument('--experiment_name', type=str, default='centernet', help='Experiment name')
     parser.add_argument('--val_check_interval', type=int, default=1, help='Validation check interval (epochs)')

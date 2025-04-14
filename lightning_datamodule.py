@@ -24,7 +24,9 @@ class CenterNetDataModule(pl.LightningDataModule):
         num_workers: int = 8,
         stride: int = 4,
         use_ttf: bool = False,
-        seed: int = 11
+        seed: int = 11,
+        mosaic=True, 
+        mixup=True
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -35,6 +37,8 @@ class CenterNetDataModule(pl.LightningDataModule):
         self.stride = stride
         self.use_ttf = use_ttf
         self.seed = seed
+        self.mosaic = mosaic
+        self.mixup = mixup
         
         # Will be set in setup()
         self.train_dataset = None
@@ -60,7 +64,9 @@ class CenterNetDataModule(pl.LightningDataModule):
             self.classes,
             len(self.classes),
             train=True,
-            stride=self.stride
+            stride=self.stride,
+            mosaic=self.mosaic,
+            mixup=self.mixup
         )
         
         self.val_dataset = CenternetDataset(
@@ -71,6 +77,7 @@ class CenterNetDataModule(pl.LightningDataModule):
             train=False,
             stride=self.stride
         )
+    
     
     def train_dataloader(self):
         return DataLoader(
@@ -97,3 +104,10 @@ class CenterNetDataModule(pl.LightningDataModule):
             worker_init_fn=partial(worker_init_fn, rank=0, seed=self.seed),
             persistent_workers=True
         )
+    
+    # Add this new method to disable augmentations
+    def disable_augmentations(self):
+        if hasattr(self, 'train_dataset'):
+            self.train_dataset.mosaic = False
+            self.train_dataset.mixup = False
+            #print("Mosaic and Mixup augmentations disabled")
