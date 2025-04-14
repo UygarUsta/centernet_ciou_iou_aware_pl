@@ -21,6 +21,7 @@ def seed_everything(seed=11):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 def main(args):
     # Set seed for reproducibility
     seed_everything(args.seed)
@@ -68,6 +69,11 @@ def main(args):
         mosaic = args.mosaic,
         mixup = args.mixup
     )
+
+    # Visualize data loading if visualization flag is set
+    if args.visualize:
+        from data_utils import visualize_data_loading
+        visualize_data_loading(data_module, classes, num_samples=5)
     
     # Initialize model
     model = LightningCenterNet(
@@ -192,6 +198,9 @@ if __name__ == "__main__":
     
     # Hardware
     parser.add_argument('--gpus', type=int, default=1, help='Number of GPUs to use')
+
+    #Debug
+    parser.add_argument('--visualize', default=False, help='Visualize Data')
     
     args = parser.parse_args()
     main(args)

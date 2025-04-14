@@ -97,3 +97,109 @@ def extract_coordinates(file_path,classes):
 
 
     return all_objects_coords
+
+
+def visualize_data_loading(data_module, classes, num_samples=5): 
+    """
+    Used in train_lightning.py for visualizing augmented data.
+    """
+    import cv2
+    import numpy as np
+    print("Visualizing data loading with augmentations...")
+    
+    # Prepare data module
+    data_module.prepare_data()
+    data_module.setup("fit")
+    
+    # Get training dataloader
+    train_dataloader = data_module.train_dataloader()
+    
+    # Define colors for visualization
+    colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0), 
+              (0, 255, 255), (255, 0, 255), (128, 0, 0), (0, 128, 0)]
+    
+    sample_count = 0
+    for batch in train_dataloader:
+        images, batch_hms, batch_whs, batch_regs, batch_reg_masks = batch
+        
+        for i in range(min(images.shape[0], 3)):  # Show up to 3 images from each batch
+            # Get image and convert to numpy array for visualization
+            image = images[i].permute(1, 2, 0).cpu().numpy()
+            # Denormalize image
+            image = (image * 255) #.astype(np.uint8)
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            image = image + [0.40789655, 0.44719303, 0.47026116]
+            image = image * [0.2886383, 0.27408165, 0.27809834]
+            
+            # Convert tensors to numpy arrays
+            hms = batch_hms[i].cpu().numpy()
+            whs = batch_whs[i].cpu().numpy()
+            regs = batch_regs[i].cpu().numpy()
+            reg_masks = batch_reg_masks[i].cpu().numpy()
+            
+            # Find all objects in the image
+            for c in range(hms.shape[-1]):
+                heatmap = hms[..., c]
+                
+                # Find peaks in the heatmap where reg_mask > 0
+                indices = np.where((heatmap > 0.5) & (reg_masks > 0))
+                
+                for y, x in zip(indices[0], indices[1]):
+                    # Get width and height
+                    w, h = whs[y, x]
+                    # Get offset
+                    offset_x, offset_y = regs[y, x]
+                    
+                    # Calculate center point with offset
+                    cx = int((x + offset_x))
+                    cy = int((y + offset_y))
+                    
+                    # Calculate bounding box coordinates
+                    x1 = int(cx - w/2) * data_module.stride
+                    y1 = int(cy - h/2) * data_module.stride
+                    x2 = int(cx + w/2) * data_module.stride
+                    y2 = int(cy + h/2) * data_module.stride
+                    
+                    # Ensure coordinates are within image bounds
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(image.shape[1] - 1, x2)
+                    y2 = min(image.shape[0] - 1, y2)
+                    # Draw bounding box
+                    color = colors[c % len(colors)]
+                    cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Add class label
+                    class_name = classes[c]
+                    cv2.putText(image, class_name, (x1, y1 - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Display image
+            cv2.imshow(f"Sample {sample_count + 1}", image)
+            cv2.waitKey(1)  # Update display
+            sample_count += 1
+            
+            # Break if we've shown enough samples
+            if sample_count >= num_samples:
+                break
+        
+        if sample_count >= num_samples:
+            break
+    
+    print("Press 'q' to continue to training or close all windows...")
+    while True:
+        key = cv2.waitKey(100) & 0xFF
+        if key == ord('q'):
+            break
+            
+        # Try to check if windows are still open
+        try:
+            if cv2.getWindowProperty(f"Sample 1", cv2.WND_PROP_VISIBLE) < 1:
+                break
+        except:
+            # Window might be closed already
+            break
+    
+    # Close all OpenCV windows
+    cv2.destroyAllWindows()
+    print("Starting training...")
