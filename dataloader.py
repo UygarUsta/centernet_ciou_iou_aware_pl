@@ -77,11 +77,11 @@ class CenternetDataset(Dataset):
         self.output_shape = (input_shape[0] // self.stride, input_shape[1] // self.stride)
         self.classes = classes
         self.num_classes = num_classes
-        self.train = train,
-        self.mosaic = mosaic and train,
-        self.mixup = mixup and train,
+        self.train = train
+        self.mosaic = mosaic 
+        self.mixup = mixup 
         # Center sampling için yeni parametreler
-        self.center_sampling = center_sampling,  # Center sampling kullanılsın mı?
+        self.center_sampling = center_sampling  # Center sampling kullanılsın mı?
         self.center_sampling_radius = center_sampling_radius  # Merkez etrafında kaç piksel işaretlenecek
         
     
@@ -95,8 +95,9 @@ class CenternetDataset(Dataset):
         self.mixup_alpha = np.random.uniform(0.3, 0.5)
         self.mosaic_prob = 0.25
         
-        use_mosaic = self.mosaic and np.random.rand() < self.mosaic_prob
-        use_mixup = self.mixup and  np.random.rand() <  self.mixup_prob
+        use_mosaic = self.mosaic == True and np.random.rand() < self.mosaic_prob and self.train == True
+        use_mixup = self.mixup == True  and  np.random.rand() <  self.mixup_prob and self.train == True
+        
 
         # Load initial image and boxes
         if use_mosaic:
@@ -194,7 +195,8 @@ class CenternetDataset(Dataset):
             img, box = self.get_random_data(
                 img_path,
                 input_shape=(self.input_shape[0] // 2, self.input_shape[1] // 2),
-                random=True
+                random=True,
+                scale_ = (1,2)
             )
             images.append(img)
             all_boxes.append(box)
@@ -264,7 +266,7 @@ class CenternetDataset(Dataset):
     def rand(self, a=0, b=1):
         return np.random.rand()*(b-a) + a
 
-    def get_random_data(self, image_path, input_shape, jitter=.3, hue=.1, sat=0.7, val=0.4, random=True):
+    def get_random_data(self, image_path, input_shape, jitter=.3, hue=.1, sat=0.7, val=0.4,scale_ = (0.25,2), random=True):
         extension = os.path.splitext(image_path)[1]
         #line    = annotation_line.split()
         #------------------------------#
@@ -323,7 +325,8 @@ class CenternetDataset(Dataset):
         #   对图像进行缩放并且进行长和宽的扭曲
         #------------------------------------------#
         new_ar = w/h * self.rand(1-jitter,1+jitter) / self.rand(1-jitter,1+jitter)
-        scale = self.rand(.25, 2)
+        #scale = self.rand(.25, 2)
+        scale = self.rand(scale_[0],scale_[1])
         if new_ar < 1:
             nh = int(scale*h)
             nw = int(nh*new_ar)

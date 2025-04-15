@@ -9,7 +9,7 @@ import time
 # cv2.setNumThreads(0)
 # cv2.ocl.setUseOpenCL(False)
 
-video = True
+video = False
 half = False 
 cpu = False 
 trace = False 
@@ -29,9 +29,9 @@ print(classes)
 input_height = 512
 input_width = 512
 stride = 4
-folder =  "E:/derpet_v4_label_tf/val_images" 
+folder =  "/home/rivian/Desktop/Datasets/derpet_v4_label_tf/val_images" 
 video_path = "G:/vlc-record-2025-01-22-11h07m03s-2_10.34.09_novis_output.avi-.avi" 
-model_path = r"G:\centernet_iou_aware_pl\lightning_logs\centernet\version_8\checkpoints\best_model_mAP_0.4997.pth"
+model_path = "/home/rivian/Desktop/centernet_ciou_iou_aware_pl/lightning_logs/centernet/version_1/checkpoints/best_model_mAP_0.4318.pth"
 device = "cuda"
 model_type = "mbv4_timm"
 

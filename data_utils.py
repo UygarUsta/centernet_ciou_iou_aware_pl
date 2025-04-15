@@ -118,6 +118,9 @@ def visualize_data_loading(data_module, classes, num_samples=5):
     colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0), 
               (0, 255, 255), (255, 0, 255), (128, 0, 0), (0, 128, 0)]
     
+    mean = np.array([0.40789655, 0.44719303, 0.47026116])
+    std = np.array([0.2886383, 0.27408165, 0.27809834])
+    
     sample_count = 0
     for batch in train_dataloader:
         images, batch_hms, batch_whs, batch_regs, batch_reg_masks = batch
@@ -125,11 +128,12 @@ def visualize_data_loading(data_module, classes, num_samples=5):
         for i in range(min(images.shape[0], 3)):  # Show up to 3 images from each batch
             # Get image and convert to numpy array for visualization
             image = images[i].permute(1, 2, 0).cpu().numpy()
-            # Denormalize image
-            image = (image * 255) #.astype(np.uint8)
+            
+            # Denormalize image (doğru sırayla)
+            image = image * std + mean  # Önce standart sapma ile çarp, sonra ortalamayı ekle
+            image = np.clip(image * 255, 0, 255).astype(np.uint8)  # 0-255 aralığına getir
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            image = image + [0.40789655, 0.44719303, 0.47026116]
-            image = image * [0.2886383, 0.27408165, 0.27809834]
+            
             
             # Convert tensors to numpy arrays
             hms = batch_hms[i].cpu().numpy()
