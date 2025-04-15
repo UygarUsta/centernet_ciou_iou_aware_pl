@@ -68,7 +68,7 @@ def preprocess_input_simple(image):
     return image / 255. #(image / 255. - mean) / std
 
 class CenternetDataset(Dataset):
-    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4,mosaic=True, mixup=True):
+    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4,mosaic=True, mixup=True,center_sampling=True, center_sampling_radius=1):
         super(CenternetDataset, self).__init__()
         self.image_path = image_path
         self.length = len(self.image_path)
@@ -79,7 +79,10 @@ class CenternetDataset(Dataset):
         self.num_classes = num_classes
         self.train = train,
         self.mosaic = mosaic and train,
-        self.mixup = mixup and train
+        self.mixup = mixup and train,
+        # Center sampling için yeni parametreler
+        self.center_sampling = center_sampling,  # Center sampling kullanılsın mı?
+        self.center_sampling_radius = center_sampling_radius  # Merkez etrafında kaç piksel işaretlenecek
         
     
 
@@ -142,22 +145,40 @@ class CenternetDataset(Dataset):
                 #-------------------------------------------------#
                 ct = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
                 ct_int = ct.astype(np.int32)
-                #----------------------------#
-                #   绘制高斯热力图
-                #----------------------------#
-                batch_hm[:, :, cls_id] = draw_gaussian(batch_hm[:, :, cls_id], ct_int, radius)
-                #---------------------------------------------------#
-                #   计算宽高真实值
-                #---------------------------------------------------#
-                batch_wh[ct_int[1], ct_int[0]] = 1. * w, 1. * h
-                #---------------------------------------------------#
-                #   计算中心偏移量
-                #---------------------------------------------------#
-                batch_reg[ct_int[1], ct_int[0]] = ct - ct_int
-                #---------------------------------------------------#
-                #   将对应的mask设置为1
-                #---------------------------------------------------#
-                batch_reg_mask[ct_int[1], ct_int[0]] = 1
+                if self.center_sampling:
+                    # Center sampling: merkez etrafındaki alanı pozitif olarak işaretle
+                    r = self.center_sampling_radius
+                    for dy in range(-r, r + 1):
+                        for dx in range(-r, r + 1):
+                            # Merkez etrafında grid içindeki noktaları kontrol et
+                            cur_pt_x = ct_int[0] + dx
+                            cur_pt_y = ct_int[1] + dy
+                            
+                            # Sınırları kontrol et
+                            if (0 <= cur_pt_y < self.output_shape[0] and 
+                                0 <= cur_pt_x < self.output_shape[1]):
+                                
+                                # Merkez noktadan uzaklığı hesapla
+                                cur_pt = np.array([cur_pt_x, cur_pt_y], dtype=np.float32)
+                                dist = np.sqrt(np.sum((ct - cur_pt)**2))
+                                
+                                # Gaussian çiz
+                                batch_hm[:, :, cls_id] = draw_gaussian(batch_hm[:, :, cls_id], [cur_pt_x, cur_pt_y], radius)
+                                
+                                # Merkez noktaya daha yakın olan noktalar için wh ve reg değerlerini güncelle
+                                # Eğer daha önce bir değer atanmadıysa veya bu nokta merkeze daha yakınsa
+                                if batch_reg_mask[cur_pt_y, cur_pt_x] == 0 or dist < np.sqrt(np.sum((ct - np.array([batch_reg[cur_pt_y, cur_pt_x, 0] + cur_pt_x, 
+                                    batch_reg[cur_pt_y, cur_pt_x, 1] + cur_pt_y]))**2)):
+
+                                    batch_wh[cur_pt_y, cur_pt_x] = 1. * w, 1. * h
+                                    batch_reg[cur_pt_y, cur_pt_x] = ct - cur_pt
+                                    batch_reg_mask[cur_pt_y, cur_pt_x] = 1
+                else:
+                    # Orijinal yaklaşım: sadece merkez noktayı işaretle
+                    batch_hm[:, :, cls_id] = draw_gaussian(batch_hm[:, :, cls_id], ct_int, radius)
+                    batch_wh[ct_int[1], ct_int[0]] = 1. * w, 1. * h
+                    batch_reg[ct_int[1], ct_int[0]] = ct - ct_int
+                    batch_reg_mask[ct_int[1], ct_int[0]] = 1
 
         image = np.transpose(preprocess_input(image), (2, 0, 1))
 
