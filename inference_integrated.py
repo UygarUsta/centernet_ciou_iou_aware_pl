@@ -6,7 +6,6 @@ import numpy as np
 import cv2 
 import openvino as ov 
 from torchvision.ops import nms
-import torch.nn as nn 
 import time 
 from dataloader import cvtColor
 from PIL import Image 
