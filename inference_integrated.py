@@ -478,10 +478,7 @@ if __name__ == "__main__":
 
         for det in filtered_dets:
             xmin,ymin,xmax,ymax,score,cls_id = det
-            xmin = int(xmin)
-            ymin = int(ymin)
-            xmax = int(xmax)
-            ymax = int(ymax)
+            xmin, ymin, xmax, ymax = int(xmin), int(ymin), int(xmax), int(ymax)
             cls_id = int(cls_id)
             cv2.rectangle(image_copy,(xmin,ymin),(xmax,ymax),(0,255,0),3)
             cv2.putText(image_copy,classes[cls_id],(xmin,ymin),cv2.FONT_HERSHEY_SIMPLEX,1,(255,0,255),2)
