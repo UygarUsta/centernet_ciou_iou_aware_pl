@@ -292,6 +292,52 @@ def preprocess(image):
     image_tensor = torch.tensor(image, dtype=torch.float32).to(DEVICE).permute(2, 0, 1).unsqueeze(0).to(device)
     return image_tensor
 
+def preprocess_fast(image, target_height=512, target_width=512):
+    """
+    Fast preprocessing function that uses letterboxing similar to the Detector class.
+    
+    Args:
+        image: Input image (numpy array)
+        target_height: Target height for the model
+        target_width: Target width for the model
+        
+    Returns:
+        Preprocessed image tensor on the device
+    """
+    # Start with original image
+    h, w, c = image.shape
+    
+    #mean    = [0.40789655, 0.44719303, 0.47026116]
+    #std     = [0.2886383, 0.27408165, 0.27809834]
+
+    # Create target image (zeros initialization is faster than random memory)
+    bimage = np.zeros(shape=[target_height, target_width, c], dtype=np.float32)
+    
+    # Calculate scaling to preserve aspect ratio
+    scale_y = target_height / h
+    scale_x = target_width / w
+    scale = min(scale_x, scale_y)
+    
+    # Resize only once with the proper scale
+    image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+    
+    # Calculate padding
+    h_, w_, _ = image.shape
+    dx = (target_width - w_) // 2
+    dy = (target_height - h_) // 2
+    
+    # Place the resized image on the canvas
+    bimage[dy:h_ + dy, dx:w_ + dx, :] = image
+    
+    # Normalize - use a simpler normalization for speed
+    bimage = bimage / 255. #speed
+    #bimage = (bimage / 255.0 - mean) / std #accuracy
+    
+    # Convert to tensor format efficiently
+    image_tensor = torch.from_numpy(np.transpose(bimage[None], (0, 3, 1, 2))).float().to(device)
+    
+    return image_tensor, scale, scale, dx, dy
+
 def scale_to_original(final_dets,img_bgr): 
     #pass image itself
     # Scale detections back to original image size
@@ -402,5 +448,54 @@ if __name__ == "__main__":
             break
     cap.release()
     cv2.destroyAllWindows()
+
+    """ 
+    #For even faster inference, but at a slight accuracy cost:
+    while 1:
+        ret,image = cap.read()
+        image_copy = image.copy()
+        fps_start = time.time()
+        image_preprocessed, scale_x, scale_y, dx, dy = preprocess_fast(image, input_height, input_width)
+        with torch.no_grad():
+            output = model(image_preprocessed)
+
+        
+        # Adjust your detection scaling to account for letterboxing
+        boxes_scaler = np.array([1/scale_x, 1/scale_y, 1/scale_x, 1/scale_y, 1., 1.], dtype='float32')
+        boxes_bias = np.array([dx, dy, dx, dy, 0., 0.], dtype='float32')
+        
+        
+        detections_np = output[0].cpu().numpy()
+    
+        # Apply scaling correction
+        filtered_dets = []
+        for det in detections_np:
+            # Only process high-confidence detections
+            if det[4] > confidence:
+                # Apply the same scaling as in the Detector class
+                scaled_box = (det[:6] - boxes_bias) * boxes_scaler
+                filtered_dets.append(scaled_box)
+
+        for det in filtered_dets:
+            xmin,ymin,xmax,ymax,score,cls_id = det
+            xmin = int(xmin)
+            ymin = int(ymin)
+            xmax = int(xmax)
+            ymax = int(ymax)
+            cls_id = int(cls_id)
+            cv2.rectangle(image_copy,(xmin,ymin),(xmax,ymax),(0,255,0),3)
+            cv2.putText(image_copy,classes[cls_id],(xmin,ymin),cv2.FONT_HERSHEY_SIMPLEX,1,(255,0,255),2)
+            cv2.putText(image_copy,f'{score:.2f}',(xmax-3,ymin),cv2.FONT_HERSHEY_COMPLEX,1,(255,0,255),2)
+
+        fps_end = time.time()
+        fps = 1/(fps_end-fps_start)
+        cv2.putText(image_copy,f"Model FPS: {fps:.2f}",(10,30),cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
+        cv2.imshow("image",image_copy)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+    """
+    
 
 
