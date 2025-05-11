@@ -330,8 +330,9 @@ def preprocess_fast(image, target_height=512, target_width=512):
     bimage[dy:h_ + dy, dx:w_ + dx, :] = image
     
     # Normalize - use a simpler normalization for speed
-    bimage = bimage / 255. #speed
+    bimage = bimage / 255. #fastest
     #bimage = (bimage / 255.0 - mean) / std #accuracy
+    #bimage = bimage * SCALE_FACTOR - OFFSET_FACTOR #accurate and fast
     
     # Convert to tensor format efficiently
     image_tensor = torch.from_numpy(np.transpose(bimage[None], (0, 3, 1, 2))).float().to(device)
@@ -451,6 +452,15 @@ if __name__ == "__main__":
 
     """ 
     #For even faster inference, but at a slight accuracy cost:
+    mean_values = np.array([0.40789655, 0.44719303, 0.47026116], dtype=np.float32)
+    std_values = np.array([0.2886383, 0.27408165, 0.27809834], dtype=np.float32)
+    INV_STD = 1.0 / std_values
+    MEAN_DIV_STD = mean_values / std_values # or mean_values * INV_STD
+    ONE_DIV_255 = 1.0 / 255.0
+
+    # Option 2: Combined factors (potentially slightly faster)
+    SCALE_FACTOR = 1.0 / (255.0 * std_values) # This is ONE_DIV_255 * INV_STD
+    OFFSET_FACTOR = mean_values / std_values   # This is MEAN_DIV_STD
     while 1:
         ret,image = cap.read()
         image_copy = image.copy()
