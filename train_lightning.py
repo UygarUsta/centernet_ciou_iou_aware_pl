@@ -187,7 +187,7 @@ if __name__ == "__main__":
     parser.add_argument('--mixup', default=True, help='Applies Mixup Augmentation')
     
     # Checkpointing and logging
-    parser.add_argument('--pretrained_weights', type=str, default='mbv4_centernet_ciouaware_best_model_mAP_0.1489_85ep.pth', help='Path to pretrained weights')
+    parser.add_argument('--pretrained_weights', type=str, default='coco_mbv4_ciou_aware_best_model_mAP_0.2379.pth', help='Path to pretrained weights')
     parser.add_argument('--log_dir', type=str, default='lightning_logs', help='Directory for logs')
     parser.add_argument('--experiment_name', type=str, default='centernet', help='Experiment name')
     parser.add_argument('--val_check_interval', type=int, default=1, help='Validation check interval (epochs)')
