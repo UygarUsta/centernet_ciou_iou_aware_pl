@@ -121,7 +121,11 @@ class CenternetDataset(Dataset):
             image = (image.astype(np.float32) * lam + image2.astype(np.float32) * (1 - lam))
             image = image.clip(0, 255).astype(np.uint8)
             # Combine boxes
-            box = np.concatenate([box, box2], axis=0) if len(box) + len(box2) > 0 else np.array([])
+            #box = np.concatenate([box, box2], axis=0) if len(box) + len(box2) > 0 else np.array([]) 
+            if len(box) > 0 and len(box2) > 0:
+                box = np.concatenate([box, box2], axis=0)
+            elif len(box2) > 0:
+                box = box2
 
         batch_hm        = np.zeros((self.output_shape[0], self.output_shape[1], self.num_classes), dtype=np.float32)
         batch_wh        = np.zeros((self.output_shape[0], self.output_shape[1], 2), dtype=np.float32)
