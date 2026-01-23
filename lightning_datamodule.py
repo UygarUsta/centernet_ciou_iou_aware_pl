@@ -26,7 +26,9 @@ class CenterNetDataModule(pl.LightningDataModule):
         use_ttf: bool = False,
         seed: int = 11,
         mosaic=True, 
-        mixup=True
+        mixup=True,
+        train_annotation_path: str = None,
+        val_annotation_path: str = None
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -39,6 +41,9 @@ class CenterNetDataModule(pl.LightningDataModule):
         self.seed = seed
         self.mosaic = mosaic
         self.mixup = mixup
+
+        self.train_annotation_path = train_annotation_path
+        self.val_annotation_path = val_annotation_path
         
         # Will be set in setup()
         self.train_dataset = None
@@ -49,13 +54,35 @@ class CenterNetDataModule(pl.LightningDataModule):
         train_images = []
         val_images = []
         
-        for ext in ["*.jpg", "*.png", "*.JPG"]:
-            train_images.extend(glob(os.path.join(self.data_dir, "train_images", ext)))
-            val_images.extend(glob(os.path.join(self.data_dir, "val_images", ext)))
+        train_annotations = None
+        val_annotations = None
+
+        # for ext in ["*.jpg", "*.png", "*.JPG"]:
+        #     train_images.extend(glob(os.path.join(self.data_dir, "train_images", ext)))
+        #     val_images.extend(glob(os.path.join(self.data_dir, "val_images", ext)))
+
+        if self.train_annotation_path and os.path.exists(self.train_annotation_path):
+            from data_utils import load_coco_data
+            train_img_root = os.path.join(self.data_dir, "train_images")
+            train_images, train_annotations = load_coco_data(self.train_annotation_path, train_img_root, self.classes)
+        else:
+            for ext in ["*.jpg", "*.png", "*.JPG"]:
+                train_images.extend(glob(os.path.join(self.data_dir, "train_images", ext)))
+            train_images = sorted(train_images)
+
+        # Load Val Data
+        if self.val_annotation_path and os.path.exists(self.val_annotation_path):
+            from data_utils import load_coco_data
+            val_img_root = os.path.join(self.data_dir, "val_images")
+            val_images, val_annotations = load_coco_data(self.val_annotation_path, val_img_root, self.classes)
+        else:
+            for ext in ["*.jpg", "*.png", "*.JPG"]:
+                val_images.extend(glob(os.path.join(self.data_dir, "val_images", ext)))
+            val_images = sorted(val_images)
         
-        # Sort for reproducibility
-        train_images = sorted(train_images)
-        val_images = sorted(val_images)
+        # # Sort for reproducibility
+        # train_images = sorted(train_images)
+        # val_images = sorted(val_images)
         
        
         self.train_dataset = CenternetDataset(
@@ -66,7 +93,8 @@ class CenterNetDataModule(pl.LightningDataModule):
             train=True,
             stride=self.stride,
             mosaic=self.mosaic,
-            mixup=self.mixup
+            mixup=self.mixup,
+            coco_annotations=train_annotations
         )
         
         self.val_dataset = CenternetDataset(
@@ -75,7 +103,8 @@ class CenterNetDataModule(pl.LightningDataModule):
             self.classes,
             len(self.classes),
             train=False,
-            stride=self.stride
+            stride=self.stride,
+            coco_annotations=val_annotations
         )
     
     

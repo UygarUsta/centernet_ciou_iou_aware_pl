@@ -68,7 +68,7 @@ def preprocess_input_simple(image):
     return image / 255. #(image / 255. - mean) / std
 
 class CenternetDataset(Dataset):
-    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4,mosaic=True, mixup=True,center_sampling=True, center_sampling_radius=1):
+    def __init__(self, image_path, input_shape, classes, num_classes, train, stride=4,mosaic=True, mixup=True,center_sampling=True, center_sampling_radius=1,coco_annotations=None):
         super(CenternetDataset, self).__init__()
         self.image_path = image_path
         self.length = len(self.image_path)
@@ -83,6 +83,7 @@ class CenternetDataset(Dataset):
         # Center sampling için yeni parametreler
         self.center_sampling = center_sampling  # Center sampling kullanılsın mı?
         self.center_sampling_radius = center_sampling_radius  # Merkez etrafında kaç piksel işaretlenecek
+        self.coco_annotations = coco_annotations
         
     
 
@@ -286,7 +287,12 @@ class CenternetDataset(Dataset):
         #------------------------------#
         #   获得预测框
         #------------------------------#
-        if os.path.isfile(image_path.replace(extension,".xml")):
+        # if os.path.isfile(image_path.replace(extension,".xml")):
+        #     annotation_line = image_path.replace(extension,".xml")
+        #     box = extract_coordinates(annotation_line,self.classes)
+        if self.coco_annotations and image_path in self.coco_annotations:
+            box = self.coco_annotations[image_path]
+        elif os.path.isfile(image_path.replace(extension,".xml")):
             annotation_line = image_path.replace(extension,".xml")
             box = extract_coordinates(annotation_line,self.classes)
         else:

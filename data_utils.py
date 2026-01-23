@@ -207,3 +207,47 @@ def visualize_data_loading(data_module, classes, num_samples=5):
     # Close all OpenCV windows
     cv2.destroyAllWindows()
     print("Starting training...")
+
+
+
+def load_coco_data(coco_json_path, image_root, classes):
+    """
+    Loads COCO annotations and converts them to the format expected by CenternetDataset.
+    Returns:
+        image_paths: List of absolute paths to images.
+        annotation_dict: Dictionary mapping image_path to list of [xmin, ymin, xmax, ymax, class_idx].
+    """
+    coco = COCO(coco_json_path)
+    
+    # Map class names to indices based on the provided classes list
+    # classes list: ['person', 'bicycle', ...] -> person is 0
+    name_to_idx = {name: i for i, name in enumerate(classes)}
+    
+    # Map COCO category IDs to class names
+    cats = coco.loadCats(coco.getCatIds())
+    cat_id_to_name = {cat['id']: cat['name'] for cat in cats}
+    
+    image_paths = []
+    annotation_dict = {}
+    
+    for img_id in coco.getImgIds():
+        img_info = coco.loadImgs(img_id)[0]
+        file_name = img_info['file_name']
+        abs_path = os.path.join(image_root, file_name)
+        image_paths.append(abs_path)
+        
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        anns = coco.loadAnns(ann_ids)
+        
+        boxes = []
+        for ann in anns:
+            if ann.get('ignore', 0): continue
+            x, y, w, h = ann['bbox']
+            cat_id = ann['category_id']
+            if cat_id in cat_id_to_name and cat_id_to_name[cat_id] in name_to_idx:
+                cls_idx = name_to_idx[cat_id_to_name[cat_id]]
+                boxes.append([x, y, x + w, y + h, cls_idx])
+        
+        annotation_dict[abs_path] = boxes
+        
+    return image_paths, annotation_dict

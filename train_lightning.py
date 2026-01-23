@@ -11,6 +11,7 @@ from pycocotools.coco import COCO
 import random
 import numpy as np
 from data_utils  import xml_to_coco_json
+torch.set_float32_matmul_precision("medium")
 
 def seed_everything(seed=11):
     random.seed(seed)
@@ -27,7 +28,20 @@ def main(args):
     seed_everything(args.seed)
     
     # Load classes from COCO annotation file
-    if os.path.exists(args.coco_annotation_path):
+    if args.val_coco_json and args.coco_annotation_path == 'val_output_coco.json':
+        args.coco_annotation_path = args.val_coco_json
+    #if os.path.exists(args.coco_annotation_path):
+    if args.train_coco_json and os.path.exists(args.train_coco_json) and not os.path.exists("classes.txt"):
+        cocoGt = COCO(args.train_coco_json)
+        classes = []
+        for k in sorted(cocoGt.cats.keys()):
+            classes.append(cocoGt.cats[k]["name"])
+        
+        # Save classes to a file
+        with open("classes.txt", "w") as f:
+            for cls in classes:
+                f.write(f"{cls}\n")
+    elif os.path.exists(args.coco_annotation_path):
         cocoGt = COCO(args.coco_annotation_path)
         classes = []
         for (i, v) in cocoGt.cats.items():
@@ -67,7 +81,9 @@ def main(args):
         stride=args.stride,
         seed=args.seed,
         mosaic = args.mosaic,
-        mixup = args.mixup
+        mixup = args.mixup,
+        train_annotation_path=args.train_coco_json,
+        val_annotation_path=args.val_coco_json
     )
 
     # Visualize data loading if visualization flag is set
@@ -161,10 +177,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train CenterNet with PyTorch Lightning")
     
     # Dataset parameters
-    parser.add_argument('--data_dir', type=str, default='/home/rivian/Desktop/Datasets/derpet_v4_label_tf',
+    parser.add_argument('--data_dir', type=str, default='/home/uygarusta/focal_instance_segmentation/COCO-Dataset-2',
                         help='Path to dataset directory')
     parser.add_argument('--coco_annotation_path', type=str, default='val_output_coco.json',
                         help='Path to COCO annotation file')
+    
+    parser.add_argument('--train_coco_json', type=str, default=None,
+                        help='Path to training COCO annotation file')
+    parser.add_argument('--val_coco_json', type=str, default=None,
+                        help='Path to validation COCO annotation file')
     
     # Model parameters
     parser.add_argument('--input_height', type=int, default=512, help='Input image height')
