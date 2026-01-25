@@ -63,21 +63,22 @@ class CenterNetDataModule(pl.LightningDataModule):
 
         if self.train_annotation_path and os.path.exists(self.train_annotation_path):
             from data_utils import load_coco_data
-            train_img_root = os.path.join(self.data_dir, "train_images")
+            print("Self.data_dir is :",self.data_dir)
+            train_img_root = os.path.join(self.data_dir, "train")
             train_images, train_annotations = load_coco_data(self.train_annotation_path, train_img_root, self.classes)
         else:
             for ext in ["*.jpg", "*.png", "*.JPG"]:
-                train_images.extend(glob(os.path.join(self.data_dir, "train_images", ext)))
+                train_images.extend(glob(os.path.join(self.data_dir, "train", ext)))
             train_images = sorted(train_images)
 
         # Load Val Data
         if self.val_annotation_path and os.path.exists(self.val_annotation_path):
             from data_utils import load_coco_data
-            val_img_root = os.path.join(self.data_dir, "val_images")
+            val_img_root = os.path.join(self.data_dir, "valid")
             val_images, val_annotations = load_coco_data(self.val_annotation_path, val_img_root, self.classes)
         else:
             for ext in ["*.jpg", "*.png", "*.JPG"]:
-                val_images.extend(glob(os.path.join(self.data_dir, "val_images", ext)))
+                val_images.extend(glob(os.path.join(self.data_dir, "valid", ext)))
             val_images = sorted(val_images)
         
         # # Sort for reproducibility

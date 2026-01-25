@@ -16,6 +16,49 @@ import glob
 from torch.optim.lr_scheduler import LambdaLR
 from datetime import datetime
 import csv
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+import torch.distributed as dist
+
+class COCOEvalDataset(Dataset):
+    def __init__(self, coco, img_dir, input_shape):
+        self.coco = coco
+        self.img_dir = img_dir
+        self.input_shape = input_shape
+        # Get all image IDs
+        self.img_ids = sorted(coco.getImgIds())
+
+    def __len__(self):
+        return len(self.img_ids)
+
+    def __getitem__(self, index):
+        img_id = self.img_ids[index]
+        img_info = self.coco.loadImgs(img_id)[0]
+        file_name = img_info['file_name']
+        image_path = os.path.join(self.img_dir, file_name)
+        
+        # Load and preprocess
+        image = cv2.imread(image_path)
+        if image is None:
+            # Return dummy if failed (handled in loop)
+            return torch.zeros((3, *self.input_shape)), img_id, 0, 0
+            
+        if len(image.shape) != 3 or image.shape[2] != 3:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        else:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # Ensure RGB
+
+        # Save original shape for restoration
+        orig_h, orig_w = image.shape[:2]
+        
+        # Resize and Normalize
+        image_data = cv2.resize(image, self.input_shape, interpolation=cv2.INTER_CUBIC)
+        image_data = image_data.astype('float32') / 255.0
+        # Mean/Std normalization
+        image_data = (image_data - np.array([0.40789655, 0.44719303, 0.47026116])) / np.array([0.2886383, 0.27408165, 0.27809834])
+        image_data = np.transpose(image_data, (2, 0, 1))
+        
+        return torch.from_numpy(image_data).float(), img_id, orig_h, orig_w
 
 
 def decode_boxes_for_ciou(hm,offset, wh, batch_regs, batch_whs, batch_reg_masks, device_type='cuda'):
@@ -216,10 +259,12 @@ class LightningCenterNet(pl.LightningModule):
         return loss
     
     def on_validation_epoch_end(self):
+        mean_ap = 0.0
         # Only run COCO evaluation on main process
-        current_epoch = self.current_epoch
+        current_epoch = self.current_epoch + 1
+        print("Current Epoch is:",current_epoch)
         # Check if we should run evaluation this epoch
-        should_evaluate = (current_epoch % self.eval_interval == 0) or (current_epoch == self.trainer.max_epochs - 1)
+        should_evaluate = (current_epoch % self.eval_interval == 0) or (current_epoch == self.trainer.max_epochs - 1) 
         if self.trainer.is_global_zero and self.cocoGt and should_evaluate:
             # Save model temporarily for evaluation
             temp_path = "temp_model_for_eval.pth"
@@ -238,6 +283,8 @@ class LightningCenterNet(pl.LightningModule):
             
             # Log mAP
             self.log('val_mAP', mean_ap, prog_bar=True)
+
+            
             
             # Save best model
             if mean_ap > self.best_map:
@@ -262,11 +309,20 @@ class LightningCenterNet(pl.LightningModule):
                     print("Warning: Checkpoint callback not available, skipping best model save")
             
             # Clean up
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            # if os.path.exists(temp_path):
+            #     os.remove(temp_path)
+
+        if should_evaluate and self.trainer.num_devices > 1:
+            
+            dist.broadcast(torch.tensor(mean_ap, device=self.device), src=0)
+            
+        # 3. Log: Both ranks must log to prevent hanging
+        if should_evaluate:
+            self.log('val_mAP', mean_ap, prog_bar=True, sync_dist=False)
+
         elif self.trainer.is_global_zero and self.cocoGt:
-            pass
-            #print(f"Skipping COCO evaluation at epoch {current_epoch} (will evaluate every {self.eval_interval} epochs)")
+            #pass
+            print(f"Skipping COCO evaluation at epoch {current_epoch} (will evaluate every {self.eval_interval} epochs)")
 
     def log_map_to_csv(self, coco_eval):
         """Log all COCO evaluation metrics to CSV file"""
@@ -330,168 +386,274 @@ class LightningCenterNet(pl.LightningModule):
         print(f"All COCO metrics logged to {csv_path}")
     
     
-    def evaluate_coco(self,model_path):
-        """Run COCO evaluation on the model"""
+    # def evaluate_coco(self,model_path):
+    #     """Run COCO evaluation on the model"""
+    #     if not self.cocoGt or not self.classes:
+    #         return 0.0
+
+    #     if self.current_epoch == 0:
+    #         return 0.0
+        
+    #     # Print some info about ground truth annotations
+    #     cat_name_to_id = {cat['name']: cat['id'] for cat in self.cocoGt.cats.values()}
+    #     # ---------------------------------------------------------
+
+    #     print(f"COCO GT info: {len(self.cocoGt.imgs)} images, {len(self.cocoGt.anns)} annotations")
+        
+    #     folder = self.val_data_path
+    #     val_images_folder = os.path.join(folder, "val_images")
+        
+    #     # Get validation images
+    #     val_images = []
+    #     for ext in ["*.jpg", "*.png", "*.JPG"]:
+    #         val_images.extend(glob.glob(os.path.join(val_images_folder, ext)))
+        
+    #     if len(val_images) == 0:
+    #         print(f"No validation images found in {val_images_folder}")
+    #         return 0.0
+        
+    #     self.model.eval()
+    #     results = []
+        
+    #     for i in self.cocoGt.dataset["images"]:
+    #         try:
+    #             image_id = i["id"]
+    #             image_path = os.path.join(val_images_folder, i["file_name"])
+
+    #             if image_id not in self.cocoGt.imgs:
+    #                 print(f"Warning: Image ID {image_id} not found in COCO annotations")
+                
+    #             image = cv2.imread(image_path)
+    #             if image is None:
+    #                 # Silent skip or warning
+    #                 continue
+                    
+    #             if len(np.shape(image)) == 3 and np.shape(image)[2] == 3:
+    #                 pass
+    #             else:
+    #                 image = image.convert('RGB')
+                
+    #             # Preprocess image
+    #             image_shape = np.array(image.shape[:2])
+    #             image_data = cv2.resize(image, self.input_shape, interpolation=cv2.INTER_CUBIC)
+    #             image_data = image_data.astype('float32') / 255.0
+    #             image_data = (image_data - np.array([0.40789655, 0.44719303, 0.47026116])) / np.array([0.2886383, 0.27408165, 0.27809834])
+    #             image_data = np.transpose(image_data, (2, 0, 1))[None]
+                
+    #             # Run inference
+    #             with torch.no_grad():
+    #                 input_tensor = torch.from_numpy(image_data).float().to(self.device)
+    #                 hm, wh, offset, iou = self.model(input_tensor)
+                    
+    #                 try:
+    #                     outputs = decode_bbox(hm, wh, offset, iou, confidence=0.05)
+                        
+    #                     if not outputs or len(outputs[0]) == 0:
+    #                         continue
+                            
+    #                     results_boxes = postprocess(outputs, True, image_shape, self.input_shape, False, 0.2) 
+                        
+    #                     for box in results_boxes[0]:
+    #                         if len(box) < 6:
+    #                             continue
+                                
+    #                         y1, x1, y2, x2, conf, cls_id = box
+                            
+    #                         if x2 <= x1 or y2 <= y1:
+    #                             continue
+
+    #                         # ---------------------------------------------------------
+    #                         # FIX START: Use Name-to-ID mapping instead of +1 assumption
+    #                         # ---------------------------------------------------------
+    #                         # 1. Get the class name using the model's prediction index
+    #                         pred_class_idx = int(cls_id)
+    #                         if pred_class_idx >= len(self.classes):
+    #                             continue
+                            
+    #                         pred_class_name = self.classes[pred_class_idx]
+                            
+    #                         # 2. Look up the correct COCO ID for this name
+    #                         if pred_class_name not in cat_name_to_id:
+    #                             # This can happen if the model predicts a class not in the val json
+    #                             continue
+                                
+    #                         category_id = cat_name_to_id[pred_class_name]
+    #                         # ---------------------------------------------------------
+                                
+    #                         results.append({
+    #                             'image_id': image_id,
+    #                             'category_id': category_id,
+    #                             'bbox': [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+    #                             'score': float(conf)
+    #                         })
+    #                 except Exception as e:
+    #                     print(f"Error in detection for image {image_path}: {e}")
+    #                     import traceback
+    #                     traceback.print_exc()
+    #         except Exception as e:
+    #             print(f"Error processing image {image_path}: {e}")
+        
+    #     # Save results to file
+    #     with open('detection_results.json', 'w') as f:
+    #         json.dump(results, f)
+        
+    #     print(f"Generated {len(results)} detections across {len(val_images)} images")
+        
+    #     # Check if we have any detections
+    #     if len(results) == 0:
+    #         print("No detections found in validation images. Cannot perform COCO evaluation.")
+    #         return 0.0
+        
+    #     # Evaluate with COCO API
+    #     try:
+    #         # First validate that our results format is correct
+    #         #for r in results[:5]:  # Print first few results for debugging
+    #         #    print(f"Sample result: {r}")
+                
+    #         # Load results into COCO API
+    #         cocoDt = self.cocoGt.loadRes('detection_results.json')
+            
+    #         # Make sure image IDs match between GT and detections
+    #         gt_img_ids = set(self.cocoGt.getImgIds())
+    #         dt_img_ids = set(cocoDt.getImgIds())
+    #         common_img_ids = gt_img_ids.intersection(dt_img_ids)
+            
+    #         print(f"GT has {len(gt_img_ids)} images, DT has {len(dt_img_ids)} images")
+    #         print(f"Common images: {len(common_img_ids)}")
+            
+    #         if len(common_img_ids) == 0:
+    #             print("No common images between ground truth and detections!")
+    #             return 0.0
+                
+    #         # Run evaluation
+    #         cocoEval = COCOeval(self.cocoGt, cocoDt, 'bbox')
+            
+    #         # Optional: restrict evaluation to only images with detections
+    #         # cocoEval.params.imgIds = list(common_img_ids)
+            
+    #         cocoEval.evaluate()
+    #         cocoEval.accumulate()
+    #         cocoEval.summarize()
+            
+    #         # Check if stats is available and has values
+    #         if hasattr(cocoEval, 'stats') and len(cocoEval.stats) > 0:
+    #             mean_ap = cocoEval.stats[0]  # mAP at IoU thresholds from .50 to .95
+    #             print(f"mAP: {mean_ap:.4f}")
+    #             return cocoEval #mean_ap
+    #         else:
+    #             print("COCO evaluation completed but stats are not available")
+    #             return 0.0
+    #     except Exception as e:
+    #         print(f"COCO evaluation error: {e}")
+    #         # Print more detailed error information
+    #         import traceback
+    #         traceback.print_exc()
+    #         return 0.0
+    
+    def evaluate_coco(self, model_path):
+        """High-performance COCO evaluation using Batched DataLoader"""
         if not self.cocoGt or not self.classes:
             return 0.0
 
         if self.current_epoch == 0:
             return 0.0
+
+        # Mapping: Class Name -> COCO ID
+        cat_name_to_id = {cat['name']: cat['id'] for cat in self.cocoGt.cats.values()}
         
-        # Print some info about ground truth annotations
-        print(f"COCO GT info: {len(self.cocoGt.imgs)} images, {len(self.cocoGt.anns)} annotations")
-        print(f"COCO categories: {self.cocoGt.cats}")
-            
-        # Prepare for evaluation
-        folder = self.val_data_path
-        print('folder:', folder)
-        print('cocogt path:',self.coco_gt_path)
-        val_images_folder = os.path.join(folder, "val_images")
-        print('val images folder:',val_images_folder)
-        # Get validation images
-        val_images = []
-        for ext in ["*.jpg", "*.png", "*.JPG"]:
-            val_images.extend(glob.glob(os.path.join(val_images_folder, ext)))
+        val_images_folder = os.path.join(self.val_data_path, "valid")
         
-        print(f"Found {len(val_images)} validation images")
-        if len(val_images) == 0:
-            print(f"No validation images found in {val_images_folder}")
-            return 0.0
+        # 1. Create the optimized DataLoader
+        eval_dataset = COCOEvalDataset(self.cocoGt, val_images_folder, self.input_shape)
         
-        # Run inference on validation images
+        # Use a reasonable batch size (e.g., 32) and workers (e.g., 4 or 8)
+        eval_loader = DataLoader(
+            eval_dataset, 
+            batch_size=16,       # Increase this if you have GPU memory
+            shuffle=False, 
+            num_workers=4,       # Parallel loading
+            pin_memory=True
+        )
+
+        print(f"Starting evaluation on {len(eval_dataset)} images...")
+        
         self.model.eval()
         results = []
         
-        #for image_path in val_images:
-        for i in self.cocoGt.dataset["images"]:
-            try:
-                image_id = i["id"]
-                image_path = os.path.join(val_images_folder, i["file_name"])
-                # Check if this image_id exists in the COCO ground truth
-                if image_id not in self.cocoGt.imgs:
-                    print(f"Warning: Image ID {image_id} not found in COCO annotations")
+        # 2. Batched Inference Loop
+        with torch.no_grad():
+            for batch_imgs, batch_ids, batch_orig_h, batch_orig_w in tqdm(eval_loader, desc="Evaluating"):
+                # Move batch to GPU
+                batch_imgs = batch_imgs.to(self.device)
                 
-                # Read and preprocess image
-                image = cv2.imread(image_path)
-                if image is None:
-                    print(f"Warning: Could not read image {image_path}")
-                    continue
+                # Inference
+                hm, wh, offset, iou = self.model(batch_imgs)
+                
+                # Decode bounding boxes
+                # Note: decode_bbox processes the whole batch at once
+                outputs = decode_bbox(hm, wh, offset, iou, confidence=0.05)
+                
+                # Process each image in the batch
+                for i in range(len(outputs)):
+                    img_id = int(batch_ids[i])
+                    orig_h = int(batch_orig_h[i])
+                    orig_w = int(batch_orig_w[i])
                     
-                if len(np.shape(image)) == 3 and np.shape(image)[2] == 3:
-                    image = image # or pass
-                else:
-                    image = image.convert('RGB')
-                
-                # Preprocess image
-                image_shape = np.array(image.shape[:2])
-                image_data = cv2.resize(image, self.input_shape, interpolation=cv2.INTER_CUBIC)
-                image_data = image_data.astype('float32') / 255.0
-                image_data = (image_data - np.array([0.40789655, 0.44719303, 0.47026116])) / np.array([0.2886383, 0.27408165, 0.27809834])
-                image_data = np.transpose(image_data, (2, 0, 1))[None]
-                
-                # Run inference
-                with torch.no_grad():
-                    input_tensor = torch.from_numpy(image_data).float().to(self.device)
-                    hm, wh, offset, iou = self.model(input_tensor)
+                    # Skip failed images (dummy returns)
+                    if orig_h == 0: continue
                     
-                    # Decode predictions
-                    try:
-                        outputs = decode_bbox(hm,wh,offset,iou,confidence=0.05)
+                    output = outputs[i]
+                    if output is None or len(output) == 0:
+                        continue
                         
-                        # Check if outputs is empty
-                        if not outputs or len(outputs[0]) == 0:
-                            print(f"No detections for image {image_id}")
-                            continue
-                            
-                        results_boxes = postprocess(outputs,True,image_shape,self.input_shape, False, 0.2) 
+                    # Post-process (Rescale boxes to original image size)
+                    # We pass single-item lists to match expected signature
+                    image_shape = np.array([orig_h, orig_w])
+                    results_boxes = postprocess([output], True, image_shape, self.input_shape, False, 0.2)
+                    
+                    # Format for JSON
+                    for box in results_boxes[0]:
+                        if len(box) < 6: continue
+                        y1, x1, y2, x2, conf, cls_id = box
                         
-                        # Format results for COCO
-                        for box in results_boxes[0]:
-                            if len(box) < 6:  # Ensure box has all required values
-                                continue
-                                
-                            y1, x1, y2, x2, conf, cls_id = box
-                            
-                            # Ensure box coordinates are valid
-                            if x2 <= x1 or y2 <= y1:
-                                continue
-                                
-                            # Ensure class_id is valid
-                            class_id = int(cls_id) + 1  # COCO categories start from 1
-                            if class_id not in self.cocoGt.cats:
-                                print(f"Warning: Class ID {class_id} not in COCO categories")
-                                continue
-                                
-                            results.append({
-                                'image_id': image_id,
-                                'category_id': class_id,
-                                'bbox': [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                                'score': float(conf)
-                            })
-                    except Exception as e:
-                        print(f"Error in detection for image {image_path}: {e}")
-                        import traceback
-                        traceback.print_exc()
-            except Exception as e:
-                print(f"Error processing image {image_path}: {e}")
-        
-        # Save results to file
+                        if x2 <= x1 or y2 <= y1: continue
+                        
+                        # ID Mapping Logic
+                        pred_class_idx = int(cls_id)
+                        if pred_class_idx >= len(self.classes): continue
+                        
+                        pred_class_name = self.classes[pred_class_idx]
+                        if pred_class_name not in cat_name_to_id: continue
+                        category_id = cat_name_to_id[pred_class_name]
+                        
+                        results.append({
+                            'image_id': img_id,
+                            'category_id': category_id,
+                            'bbox': [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                            'score': float(conf)
+                        })
+
+        # 3. Standard COCO Eval (same as before)
+        if len(results) == 0:
+            print("No detections found.")
+            return 0.0
+            
+        # Save results
         with open('detection_results.json', 'w') as f:
             json.dump(results, f)
-        
-        print(f"Generated {len(results)} detections across {len(val_images)} images")
-        
-        # Check if we have any detections
-        if len(results) == 0:
-            print("No detections found in validation images. Cannot perform COCO evaluation.")
-            return 0.0
-        
-        # Evaluate with COCO API
+            
         try:
-            # First validate that our results format is correct
-            #for r in results[:5]:  # Print first few results for debugging
-            #    print(f"Sample result: {r}")
-                
-            # Load results into COCO API
             cocoDt = self.cocoGt.loadRes('detection_results.json')
-            
-            # Make sure image IDs match between GT and detections
-            gt_img_ids = set(self.cocoGt.getImgIds())
-            dt_img_ids = set(cocoDt.getImgIds())
-            common_img_ids = gt_img_ids.intersection(dt_img_ids)
-            
-            print(f"GT has {len(gt_img_ids)} images, DT has {len(dt_img_ids)} images")
-            print(f"Common images: {len(common_img_ids)}")
-            
-            if len(common_img_ids) == 0:
-                print("No common images between ground truth and detections!")
-                return 0.0
-                
-            # Run evaluation
             cocoEval = COCOeval(self.cocoGt, cocoDt, 'bbox')
-            
-            # Optional: restrict evaluation to only images with detections
-            # cocoEval.params.imgIds = list(common_img_ids)
-            
             cocoEval.evaluate()
             cocoEval.accumulate()
             cocoEval.summarize()
-            
-            # Check if stats is available and has values
-            if hasattr(cocoEval, 'stats') and len(cocoEval.stats) > 0:
-                mean_ap = cocoEval.stats[0]  # mAP at IoU thresholds from .50 to .95
-                print(f"mAP: {mean_ap:.4f}")
-                return cocoEval #mean_ap
-            else:
-                print("COCO evaluation completed but stats are not available")
-                return 0.0
+            return cocoEval
         except Exception as e:
             print(f"COCO evaluation error: {e}")
-            # Print more detailed error information
             import traceback
             traceback.print_exc()
             return 0.0
-        
     
     def configure_optimizers(self):
 

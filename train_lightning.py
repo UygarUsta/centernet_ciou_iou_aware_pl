@@ -159,7 +159,8 @@ def main(args):
         callbacks=[checkpoint_callback, lr_monitor, early_stopping],
         logger=logger,
         log_every_n_steps=50,
-        check_val_every_n_epoch=args.val_check_interval
+        check_val_every_n_epoch=args.val_check_interval,
+        gradient_clip_val=1.0  # Clips gradients with norm > 1.0
     )
     
     # Train model
@@ -208,11 +209,11 @@ if __name__ == "__main__":
     parser.add_argument('--mixup', default=True, help='Applies Mixup Augmentation')
     
     # Checkpointing and logging
-    parser.add_argument('--pretrained_weights', type=str, default='coco_mbv4_ciou_aware_best_model_mAP_0.2379.pth', help='Path to pretrained weights')
+    parser.add_argument('--pretrained_weights', type=str, default='', help='Path to pretrained weights')
     parser.add_argument('--log_dir', type=str, default='lightning_logs', help='Directory for logs')
     parser.add_argument('--experiment_name', type=str, default='centernet', help='Experiment name')
-    parser.add_argument('--val_check_interval', type=int, default=1, help='Validation check interval (epochs)')
-    parser.add_argument('--eval_interval', type=int, default=5,help='COCO evaluation interval (epochs)')
+    parser.add_argument('--val_check_interval', type=int, default=3, help='Validation check interval (epochs)')
+    parser.add_argument('--eval_interval', type=int, default=3,help='COCO evaluation interval (epochs)')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
     parser.add_argument('--resume_from_checkpoint', type=str, default=None, 
                         help='Path to checkpoint to resume training from')

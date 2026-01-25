@@ -96,7 +96,7 @@ def ciou_loss(pred,target,weight,avg_factor=None,eps=1e-5):
         overlap = wh[:, 0] * wh[:, 1]
         ap = (bboxes1[:, 2] - bboxes1[:, 0] + 1) * (bboxes1[:, 3] - bboxes1[:, 1] + 1)
         ag = (bboxes2[:, 2] - bboxes2[:, 0] + 1) * (bboxes2[:, 3] - bboxes2[:, 1] + 1)
-        ious = overlap / (ap + ag - overlap)
+        ious = overlap / (ap + ag - overlap + 1e-7)
 
         # cal outer boxes
         outer_left_up = torch.min(bboxes1[:, :2], bboxes2[:, :2])
