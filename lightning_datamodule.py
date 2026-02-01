@@ -1,12 +1,28 @@
 import os
 import torch
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset # Added Dataset
 from dataloader import CenternetDataset, centernet_dataset_collate
 from glob import glob
 from functools import partial
 import random
 import numpy as np
+
+class RepeatDataset(Dataset):
+    def __init__(self, dataset, times=1):
+        self.dataset = dataset
+        self.times = times
+
+    def __getitem__(self, idx):
+        return self.dataset[idx % len(self.dataset)]
+
+    def __len__(self):
+        return len(self.dataset) * self.times
+    
+    # Helper to easily access the underlying dataset attributes (like classes)
+    def __getattr__(self, name):
+        return getattr(self.dataset, name)
+
 
 def worker_init_fn(worker_id, rank, seed):
     worker_seed = rank + seed
@@ -27,6 +43,7 @@ class CenterNetDataModule(pl.LightningDataModule):
         seed: int = 11,
         mosaic=True, 
         mixup=True,
+        repeats: int = 1, # New parameter: defaults to 1 (no repeat)
         train_annotation_path: str = None,
         val_annotation_path: str = None
     ):
@@ -41,29 +58,23 @@ class CenterNetDataModule(pl.LightningDataModule):
         self.seed = seed
         self.mosaic = mosaic
         self.mixup = mixup
+        self.repeats = repeats # Store repeats
 
         self.train_annotation_path = train_annotation_path
         self.val_annotation_path = val_annotation_path
         
-        # Will be set in setup()
         self.train_dataset = None
         self.val_dataset = None
         
     def setup(self, stage=None):
-        # Find all image files
         train_images = []
         val_images = []
-        
         train_annotations = None
         val_annotations = None
 
-        # for ext in ["*.jpg", "*.png", "*.JPG"]:
-        #     train_images.extend(glob(os.path.join(self.data_dir, "train_images", ext)))
-        #     val_images.extend(glob(os.path.join(self.data_dir, "val_images", ext)))
-
+        # Load Train Data logic
         if self.train_annotation_path and os.path.exists(self.train_annotation_path):
             from data_utils import load_coco_data
-            print("Self.data_dir is :",self.data_dir)
             train_img_root = os.path.join(self.data_dir, "train")
             train_images, train_annotations = load_coco_data(self.train_annotation_path, train_img_root, self.classes)
         else:
@@ -71,7 +82,7 @@ class CenterNetDataModule(pl.LightningDataModule):
                 train_images.extend(glob(os.path.join(self.data_dir, "train", ext)))
             train_images = sorted(train_images)
 
-        # Load Val Data
+        # Load Val Data logic
         if self.val_annotation_path and os.path.exists(self.val_annotation_path):
             from data_utils import load_coco_data
             val_img_root = os.path.join(self.data_dir, "valid")
@@ -81,12 +92,8 @@ class CenterNetDataModule(pl.LightningDataModule):
                 val_images.extend(glob(os.path.join(self.data_dir, "valid", ext)))
             val_images = sorted(val_images)
         
-        # # Sort for reproducibility
-        # train_images = sorted(train_images)
-        # val_images = sorted(val_images)
-        
-       
-        self.train_dataset = CenternetDataset(
+        # Initialize the base dataset
+        base_train_dataset = CenternetDataset(
             train_images,
             self.input_shape,
             self.classes,
@@ -97,6 +104,12 @@ class CenterNetDataModule(pl.LightningDataModule):
             mixup=self.mixup,
             coco_annotations=train_annotations
         )
+
+        # --- Apply Repeat Logic here ---
+        if self.repeats > 1:
+            self.train_dataset = RepeatDataset(base_train_dataset, times=self.repeats)
+        else:
+            self.train_dataset = base_train_dataset
         
         self.val_dataset = CenternetDataset(
             val_images,
@@ -108,12 +121,11 @@ class CenterNetDataModule(pl.LightningDataModule):
             coco_annotations=val_annotations
         )
     
-    
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=True, # Shuffle still works perfectly on the repeated indices
             num_workers=self.num_workers,
             pin_memory=True,
             drop_last=True,
@@ -135,9 +147,12 @@ class CenterNetDataModule(pl.LightningDataModule):
             persistent_workers=True
         )
     
-    # Add this new method to disable augmentations
     def disable_augmentations(self):
-        if hasattr(self, 'train_dataset'):
-            self.train_dataset.mosaic = False
-            self.train_dataset.mixup = False
-            #print("Mosaic and Mixup augmentations disabled")
+        # We need to check if it's wrapped or not
+        target = self.train_dataset
+        if isinstance(target, RepeatDataset):
+            target = target.dataset
+            
+        if target is not None:
+            target.mosaic = False
+            target.mixup = False

@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import cv2
-from infer_utils import infer_image,load_model
+from infer_utils import infer_image,load_model,hardnet_load_model
 from glob import glob
 import os
 import time 
@@ -16,10 +16,10 @@ trace = False
 openvino_exp = False 
 openvino_int8 = False 
 export_onnx = False 
+save_xml = False
 
 
-
-f = open("classes.txt","r").readlines()
+f = open("classes_coco.txt","r").readlines()
 classes = []
 for i in f:
     classes.append(i.strip('\n'))
@@ -29,9 +29,9 @@ print(classes)
 input_height = 512
 input_width = 512
 stride = 4
-folder =  "/home/rivian/Desktop/Datasets/derpet_v4_label_tf/val_images" 
+folder =  r"C:\Users\uygar.usta\Desktop\codes\focal_instance_segmentation\valid" 
 video_path = "G:/vlc-record-2025-01-22-11h07m03s-2_10.34.09_novis_output.avi-.avi" 
-model_path = "/home/rivian/Desktop/centernet_ciou_iou_aware_pl/lightning_logs/centernet/version_1/checkpoints/best_model_mAP_0.4318.pth"
+model_path = r"coco_mbv4_ciou_aware_best_model_mAP_0.2379.pth"
 device = "cuda"
 model_type = "mbv4_timm"
 
@@ -41,6 +41,24 @@ if model_type == "mbv4_timm":
     model = CenterNet(nc=len(classes))
     if model_path != "":
         model = load_model(model,model_path)
+
+if model_type == "hardnet":
+    conf = 0.005
+    from hardnet import get_pose_net
+    model = get_pose_net(85,{"hm":len(classes),"wh":2,"offset":2,"iou":1}) 
+    if model_path.endswith(".ckpt"):
+        #model = hardnet_load_model(model,model_path)
+        checkpoint = torch.load(model_path)
+        state_dict = checkpoint['state_dict']
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key.replace("model.", "") 
+            new_state_dict[new_key] = value
+        model.load_state_dict(new_state_dict)
+    else:
+        model.load_state_dict(torch.load(model_path))
+    
+        
 
 
 
@@ -148,7 +166,7 @@ if export_onnx:
 if not cpu:
     model.cuda()
     
-save_xml = False
+
 if save_xml :
     if not os.path.isdir(os.path.join(folder,"annos")):
         os.mkdir(os.path.join(folder,"annos"))

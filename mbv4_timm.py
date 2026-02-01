@@ -142,7 +142,9 @@ class CenterNet(nn.Module):
         input_dims = []
         ###model structure
         self.backbone =  timm.create_model('mobilenetv4_conv_small.e1200_r224_in1k', pretrained=True, features_only=True,exportable=True) #e1200_r224_in1k - 050
+        #self.backbone = timm.create_model('mobilenetv4_hybrid_large.e600_r384_in1k', pretrained=True,features_only=True,exportable=True)
         feature_info = self.backbone.feature_info
+        #print("Feature info:",feature_info.info)
         for idx, info in enumerate(feature_info.info):
             #print(f"Seviye {idx+1}: {info['module']}, kanal sayısı={info['num_chs']}")
             if idx > 0:
@@ -181,8 +183,8 @@ if __name__ == "__main__":
     # only set that subset of names, starting from the beginning.
     # Move model to CPU
     batch_size = 1
-    input_height = 320
-    input_width = 320
+    input_height = 512
+    input_width = 512
     device = torch.device('cpu')
     model.to(device)
     modelparams = count_parameters(model)

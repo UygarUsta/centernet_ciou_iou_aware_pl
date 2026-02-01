@@ -47,8 +47,8 @@ def infer_image(model,img,classes,stride=4,confidence=0.05,half=False,input_shap
     
     image_shape = np.array(np.shape(image)[0:2])
     image  = cvtColor(image)
-    #image_data = resize_image(image,tuple(input_shape),letterbox_image=True) 
-    image_data = resize_numpy(image,tuple(input_shape),letterbox_image=False)
+    image_data = resize_image(image,tuple(input_shape),letterbox_image=True) 
+    #image_data = resize_numpy(image,tuple(input_shape),letterbox_image=False)
     #image_data = cv2.resize(image, tuple(input_shape), interpolation=cv2.INTER_CUBIC)
 
     image_data = np.expand_dims(np.transpose(preprocess_input(np.array(image_data, dtype='float32')), (2, 0, 1)), 0)
@@ -87,7 +87,7 @@ def infer_image(model,img,classes,stride=4,confidence=0.05,half=False,input_shap
       
       #results = centernet_correct_boxes_xyxy(outputs,input_shape, image_shape, False).cpu()
       #results = outputs[0].cpu().numpy()
-      results = postprocess(outputs,True,image_shape,input_shape, False, 0.3) #letterbox true
+      results = postprocess(outputs,True,image_shape,input_shape, True, 0.3) #letterbox true
 
       #fp2 = time.time()
       #print(f"Postprocessing took: {fp2-fp1} ms")
@@ -118,7 +118,7 @@ def infer_image(model,img,classes,stride=4,confidence=0.05,half=False,input_shap
 
             
     except Exception as e:
-        print("Excepton:",e)
+        print("Exception:",e)
         pass
     fps2 = time.time()
     fps = 1 / (fps2-fps1) 

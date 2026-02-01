@@ -4,12 +4,17 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 from lightning_model import LightningCenterNet
 from lightning_datamodule import CenterNetDataModule
 import json
+import faster_coco_eval
+# This single line replaces pycocotools with faster-coco-eval
+faster_coco_eval.init_as_pycocotools()
 from pycocotools.coco import COCO
 import random
 import numpy as np
+from datetime import timedelta
 from data_utils  import xml_to_coco_json
 torch.set_float32_matmul_precision("medium")
 
@@ -83,7 +88,9 @@ def main(args):
         mosaic = args.mosaic,
         mixup = args.mixup,
         train_annotation_path=args.train_coco_json,
-        val_annotation_path=args.val_coco_json
+        val_annotation_path=args.val_coco_json,
+        repeats=args.repeats
+
     )
 
     # Visualize data loading if visualization flag is set
@@ -149,18 +156,23 @@ def main(args):
         save_dir=args.log_dir,
         name=args.experiment_name
     )
+
+
+    #ddp = DDPStrategy(process_group_backend="nccl", timeout=timedelta(minutes=180))
     
     # Initialize trainer
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         devices=args.gpus if torch.cuda.is_available() else None,
-        precision='16-mixed' if args.fp16 else 32,
+        #precision='16-mixed' if args.fp16 else 32,
+        precision='bf16-mixed' if args.fp16 == True else 32,
         callbacks=[checkpoint_callback, lr_monitor, early_stopping],
         logger=logger,
         log_every_n_steps=50,
         check_val_every_n_epoch=args.val_check_interval,
-        gradient_clip_val=1.0  # Clips gradients with norm > 1.0
+        gradient_clip_val=1.0,  # Clips gradients with norm > 1.0
+        #strategy=ddp
     )
     
     # Train model
@@ -203,10 +215,12 @@ if __name__ == "__main__":
     parser.add_argument('--lr_scheduler', type=str, default='yolox_cos', choices=['cos','yolox_cos','step'],
                         help='Learning rate scheduler type')
     parser.add_argument('--num_workers', type=int, default=8, help='Number of data loading workers')
-    parser.add_argument('--fp16', default=True,action='store_true', help='Use mixed precision training')
+    #parser.add_argument('--fp16', default=True,action='store_true', help='Use mixed precision training')
+    parser.add_argument('--fp16', action='store_true', help='Use mixed precision')
     parser.add_argument('--seed', type=int, default=11, help='Random seed')
     parser.add_argument('--mosaic',default=True, help='Applies Mosaic Augmentation'),
     parser.add_argument('--mixup', default=True, help='Applies Mixup Augmentation')
+    parser.add_argument('--repeats',type=int, default=1, help='Repeats Dataset (MMdetection Inspired)')
     
     # Checkpointing and logging
     parser.add_argument('--pretrained_weights', type=str, default='', help='Path to pretrained weights')

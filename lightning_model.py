@@ -3,10 +3,14 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from loss import focal_loss, ciou_loss,get_lr_scheduler,set_optimizer_lr,get_lr,iou_aware_loss,reg_l1_loss
 from mbv4_timm import CenterNet
+from hardnet import get_pose_net
 from lightning_datamodule import CenterNetDataModule
 from utils_bbox import decode_bbox, postprocess
 import numpy as np
 import json
+import faster_coco_eval
+# This single line replaces pycocotools with faster-coco-eval
+faster_coco_eval.init_as_pycocotools()
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 import os
@@ -19,6 +23,7 @@ import csv
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import torch.distributed as dist
+from PIL import Image 
 
 class COCOEvalDataset(Dataset):
     def __init__(self, coco, img_dir, input_shape):
@@ -59,6 +64,73 @@ class COCOEvalDataset(Dataset):
         image_data = np.transpose(image_data, (2, 0, 1))
         
         return torch.from_numpy(image_data).float(), img_id, orig_h, orig_w
+    
+
+
+def cvtColor(image):
+    if len(np.shape(image)) == 3 and np.shape(image)[2] == 3:
+        return image 
+    else:
+        image = image.convert('RGB')
+        return image 
+    
+
+def preprocess_input(image):
+    image   = np.array(image,dtype = np.float32)[:, :, ::-1]
+    mean    = [0.40789655, 0.44719303, 0.47026116]
+    std     = [0.2886383, 0.27408165, 0.27809834]
+    return (image / 255. - mean) / std
+    
+class COCOEvalDataset2(Dataset):
+    def __init__(self, coco, img_dir, input_shape):
+        self.coco = coco
+        self.img_dir = img_dir
+        self.input_shape = input_shape
+        # Get all image IDs
+        self.img_ids = sorted(coco.getImgIds())
+
+    def __len__(self):
+        return len(self.img_ids)
+
+    def __getitem__(self, index):
+        img_id = self.img_ids[index]
+        img_info = self.coco.loadImgs(img_id)[0]
+        file_name = img_info['file_name']
+        image_path = os.path.join(self.img_dir, file_name)
+        
+        image   = Image.open(image_path)
+        image   = cvtColor(image)
+        #------------------------------#
+        #   获得图像的高宽与目标高宽
+        #------------------------------#
+        iw, ih  = image.size
+        h, w    = self.input_shape
+
+
+        scale = min(w/iw, h/ih)
+        nw = int(iw*scale)
+        nh = int(ih*scale)
+        dx = (w-nw)//2
+        dy = (h-nh)//2
+
+        #---------------------------------#
+        #   将图像多余的部分加上灰条
+        #---------------------------------#
+        image       = image.resize((nw,nh), Image.BICUBIC)
+        new_image   = Image.new('RGB', (w,h), (128,128,128))
+        new_image.paste(image, (dx, dy))
+        image_data  = np.array(new_image, np.float32)
+
+        image_data = np.transpose(preprocess_input(np.array(image_data, dtype='float32')), (2, 0, 1))
+
+        image = torch.from_numpy(np.asarray(image_data)).type(torch.FloatTensor)
+
+        if image is None:
+            # Return dummy if failed (handled in loop)
+            return torch.zeros((3, *self.input_shape)), img_id, 0, 0
+            
+        
+        return image, img_id, ih, iw  #orig_h, orig_w
 
 
 def decode_boxes_for_ciou(hm,offset, wh, batch_regs, batch_whs, batch_reg_masks, device_type='cuda'):
@@ -165,8 +237,9 @@ class LightningCenterNet(pl.LightningModule):
         self.save_hyperparameters()
         
         # Model
-        self.model = CenterNet(num_classes)
+        #self.model = CenterNet(num_classes)
         
+        self.model = get_pose_net(68,{"hm":num_classes,"wh":2,"offset":2,"iou":1})
         # Parameters
         self.num_classes = num_classes
         self.input_shape = input_shape
@@ -386,169 +459,6 @@ class LightningCenterNet(pl.LightningModule):
         print(f"All COCO metrics logged to {csv_path}")
     
     
-    # def evaluate_coco(self,model_path):
-    #     """Run COCO evaluation on the model"""
-    #     if not self.cocoGt or not self.classes:
-    #         return 0.0
-
-    #     if self.current_epoch == 0:
-    #         return 0.0
-        
-    #     # Print some info about ground truth annotations
-    #     cat_name_to_id = {cat['name']: cat['id'] for cat in self.cocoGt.cats.values()}
-    #     # ---------------------------------------------------------
-
-    #     print(f"COCO GT info: {len(self.cocoGt.imgs)} images, {len(self.cocoGt.anns)} annotations")
-        
-    #     folder = self.val_data_path
-    #     val_images_folder = os.path.join(folder, "val_images")
-        
-    #     # Get validation images
-    #     val_images = []
-    #     for ext in ["*.jpg", "*.png", "*.JPG"]:
-    #         val_images.extend(glob.glob(os.path.join(val_images_folder, ext)))
-        
-    #     if len(val_images) == 0:
-    #         print(f"No validation images found in {val_images_folder}")
-    #         return 0.0
-        
-    #     self.model.eval()
-    #     results = []
-        
-    #     for i in self.cocoGt.dataset["images"]:
-    #         try:
-    #             image_id = i["id"]
-    #             image_path = os.path.join(val_images_folder, i["file_name"])
-
-    #             if image_id not in self.cocoGt.imgs:
-    #                 print(f"Warning: Image ID {image_id} not found in COCO annotations")
-                
-    #             image = cv2.imread(image_path)
-    #             if image is None:
-    #                 # Silent skip or warning
-    #                 continue
-                    
-    #             if len(np.shape(image)) == 3 and np.shape(image)[2] == 3:
-    #                 pass
-    #             else:
-    #                 image = image.convert('RGB')
-                
-    #             # Preprocess image
-    #             image_shape = np.array(image.shape[:2])
-    #             image_data = cv2.resize(image, self.input_shape, interpolation=cv2.INTER_CUBIC)
-    #             image_data = image_data.astype('float32') / 255.0
-    #             image_data = (image_data - np.array([0.40789655, 0.44719303, 0.47026116])) / np.array([0.2886383, 0.27408165, 0.27809834])
-    #             image_data = np.transpose(image_data, (2, 0, 1))[None]
-                
-    #             # Run inference
-    #             with torch.no_grad():
-    #                 input_tensor = torch.from_numpy(image_data).float().to(self.device)
-    #                 hm, wh, offset, iou = self.model(input_tensor)
-                    
-    #                 try:
-    #                     outputs = decode_bbox(hm, wh, offset, iou, confidence=0.05)
-                        
-    #                     if not outputs or len(outputs[0]) == 0:
-    #                         continue
-                            
-    #                     results_boxes = postprocess(outputs, True, image_shape, self.input_shape, False, 0.2) 
-                        
-    #                     for box in results_boxes[0]:
-    #                         if len(box) < 6:
-    #                             continue
-                                
-    #                         y1, x1, y2, x2, conf, cls_id = box
-                            
-    #                         if x2 <= x1 or y2 <= y1:
-    #                             continue
-
-    #                         # ---------------------------------------------------------
-    #                         # FIX START: Use Name-to-ID mapping instead of +1 assumption
-    #                         # ---------------------------------------------------------
-    #                         # 1. Get the class name using the model's prediction index
-    #                         pred_class_idx = int(cls_id)
-    #                         if pred_class_idx >= len(self.classes):
-    #                             continue
-                            
-    #                         pred_class_name = self.classes[pred_class_idx]
-                            
-    #                         # 2. Look up the correct COCO ID for this name
-    #                         if pred_class_name not in cat_name_to_id:
-    #                             # This can happen if the model predicts a class not in the val json
-    #                             continue
-                                
-    #                         category_id = cat_name_to_id[pred_class_name]
-    #                         # ---------------------------------------------------------
-                                
-    #                         results.append({
-    #                             'image_id': image_id,
-    #                             'category_id': category_id,
-    #                             'bbox': [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-    #                             'score': float(conf)
-    #                         })
-    #                 except Exception as e:
-    #                     print(f"Error in detection for image {image_path}: {e}")
-    #                     import traceback
-    #                     traceback.print_exc()
-    #         except Exception as e:
-    #             print(f"Error processing image {image_path}: {e}")
-        
-    #     # Save results to file
-    #     with open('detection_results.json', 'w') as f:
-    #         json.dump(results, f)
-        
-    #     print(f"Generated {len(results)} detections across {len(val_images)} images")
-        
-    #     # Check if we have any detections
-    #     if len(results) == 0:
-    #         print("No detections found in validation images. Cannot perform COCO evaluation.")
-    #         return 0.0
-        
-    #     # Evaluate with COCO API
-    #     try:
-    #         # First validate that our results format is correct
-    #         #for r in results[:5]:  # Print first few results for debugging
-    #         #    print(f"Sample result: {r}")
-                
-    #         # Load results into COCO API
-    #         cocoDt = self.cocoGt.loadRes('detection_results.json')
-            
-    #         # Make sure image IDs match between GT and detections
-    #         gt_img_ids = set(self.cocoGt.getImgIds())
-    #         dt_img_ids = set(cocoDt.getImgIds())
-    #         common_img_ids = gt_img_ids.intersection(dt_img_ids)
-            
-    #         print(f"GT has {len(gt_img_ids)} images, DT has {len(dt_img_ids)} images")
-    #         print(f"Common images: {len(common_img_ids)}")
-            
-    #         if len(common_img_ids) == 0:
-    #             print("No common images between ground truth and detections!")
-    #             return 0.0
-                
-    #         # Run evaluation
-    #         cocoEval = COCOeval(self.cocoGt, cocoDt, 'bbox')
-            
-    #         # Optional: restrict evaluation to only images with detections
-    #         # cocoEval.params.imgIds = list(common_img_ids)
-            
-    #         cocoEval.evaluate()
-    #         cocoEval.accumulate()
-    #         cocoEval.summarize()
-            
-    #         # Check if stats is available and has values
-    #         if hasattr(cocoEval, 'stats') and len(cocoEval.stats) > 0:
-    #             mean_ap = cocoEval.stats[0]  # mAP at IoU thresholds from .50 to .95
-    #             print(f"mAP: {mean_ap:.4f}")
-    #             return cocoEval #mean_ap
-    #         else:
-    #             print("COCO evaluation completed but stats are not available")
-    #             return 0.0
-    #     except Exception as e:
-    #         print(f"COCO evaluation error: {e}")
-    #         # Print more detailed error information
-    #         import traceback
-    #         traceback.print_exc()
-    #         return 0.0
     
     def evaluate_coco(self, model_path):
         """High-performance COCO evaluation using Batched DataLoader"""
@@ -564,7 +474,7 @@ class LightningCenterNet(pl.LightningModule):
         val_images_folder = os.path.join(self.val_data_path, "valid")
         
         # 1. Create the optimized DataLoader
-        eval_dataset = COCOEvalDataset(self.cocoGt, val_images_folder, self.input_shape)
+        eval_dataset = COCOEvalDataset2(self.cocoGt, val_images_folder, self.input_shape) #Letterbox applied
         
         # Use a reasonable batch size (e.g., 32) and workers (e.g., 4 or 8)
         eval_loader = DataLoader(
@@ -609,7 +519,7 @@ class LightningCenterNet(pl.LightningModule):
                     # Post-process (Rescale boxes to original image size)
                     # We pass single-item lists to match expected signature
                     image_shape = np.array([orig_h, orig_w])
-                    results_boxes = postprocess([output], True, image_shape, self.input_shape, False, 0.2)
+                    results_boxes = postprocess([output], True, image_shape, self.input_shape, True, 0.2) #Letterbox set to True
                     
                     # Format for JSON
                     for box in results_boxes[0]:
@@ -712,21 +622,50 @@ class LightningCenterNet(pl.LightningModule):
             }
         }
     
+    # def on_train_epoch_start(self):
+    #     # Only apply manual LR scheduling if using yolox_cos
+    #     if self.lr_decay_type == "yolox_cos":
+    #         # Get current epoch
+    #         current_epoch = self.current_epoch
+    #         # Calculate the new learning rate based on the current epoch
+    #         set_optimizer_lr(self.optimizers(), self.lr_scheduler_func, current_epoch)
+    #         current_lr = get_lr(self.optimizers())
+    #         # Log the learning rate
+    #         self.log('learning_rate', current_lr, prog_bar=True)
+
+    #     # Check if we're in the last 10 epochs
+    #     if self.trainer.max_epochs - self.current_epoch <= 10:
+    #         # Disable mosaic and mixup
+    #         if self.current_epoch == self.trainer.max_epochs - 10:
+    #             print(f"Epoch {self.current_epoch}: Disabling mosaic and mixup for final training")
+    #         if isinstance(self.trainer.datamodule, CenterNetDataModule):
+    #             self.trainer.datamodule.disable_augmentations()
+
     def on_train_epoch_start(self):
-        # Only apply manual LR scheduling if using yolox_cos
+        # 1. Retrieve the repeat factor from your datamodule
+        # Default to 1 if not found
+        repeats = getattr(self.trainer.datamodule, "repeats", 1)
+        
+        # 2. Scale the "no augmentation" period
+        # If repeats=5, then 10 // 5 = 2 epochs.
+        # 2 epochs * 5 repeats = 10 actual passes (Same as original intent)
+        no_aug_epochs = max(1, 10 // repeats) 
+
+        # --- LR Scheduler Logic (Remains mostly the same) ---
         if self.lr_decay_type == "yolox_cos":
-            # Get current epoch
             current_epoch = self.current_epoch
-            # Calculate the new learning rate based on the current epoch
             set_optimizer_lr(self.optimizers(), self.lr_scheduler_func, current_epoch)
             current_lr = get_lr(self.optimizers())
-            # Log the learning rate
             self.log('learning_rate', current_lr, prog_bar=True)
 
-        # Check if we're in the last 10 epochs
-        if self.trainer.max_epochs - self.current_epoch <= 10:
-            # Disable mosaic and mixup
-            if self.current_epoch == self.trainer.max_epochs - 10:
-                print(f"Epoch {self.current_epoch}: Disabling mosaic and mixup for final training")
+        # --- Augmented Disable Logic (Updated) ---
+        # Use the scaled 'no_aug_epochs' variable instead of hardcoded 10
+        if self.trainer.max_epochs - self.current_epoch <= no_aug_epochs:
+            
+            # Check if we just entered this stage to print the message
+            if self.current_epoch == self.trainer.max_epochs - no_aug_epochs:
+                print(f"Epoch {self.current_epoch}: Disabling mosaic/mixup for final {no_aug_epochs} epochs "
+                    f"(equivalent to {no_aug_epochs * repeats} original epochs)")
+            
             if isinstance(self.trainer.datamodule, CenterNetDataModule):
                 self.trainer.datamodule.disable_augmentations()

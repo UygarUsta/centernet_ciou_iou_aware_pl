@@ -37,6 +37,10 @@ def focal_loss(pred, target):
     neg_weights = torch.pow(1 - target, 4)
     
     pred = torch.clamp(pred, 1e-6, 1 - 1e-6)
+
+    #pred = torch.clamp(pred, 1e-12) #Saw this in CenterNet-better -> https://github.com/FateScript/CenterNet-better/blob/master/dl_lib/network/loss/focal_loss.py \
+    #might try it 31.01.2026
+    
     #-------------------------------------------------------------------------#
     #   计算focal loss。难分类样本权重大，易分类样本权重小。
     #-------------------------------------------------------------------------#
