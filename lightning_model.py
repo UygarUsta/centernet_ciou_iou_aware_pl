@@ -519,7 +519,7 @@ class LightningCenterNet(pl.LightningModule):
                     # Post-process (Rescale boxes to original image size)
                     # We pass single-item lists to match expected signature
                     image_shape = np.array([orig_h, orig_w])
-                    results_boxes = postprocess([output], True, image_shape, self.input_shape, True, 0.2) #Letterbox set to True
+                    results_boxes = postprocess([output], False, image_shape, self.input_shape, True, 0.2) #Letterbox set to True, NMS set to false (higher map when set to false)
                     
                     # Format for JSON
                     for box in results_boxes[0]:
@@ -669,3 +669,4 @@ class LightningCenterNet(pl.LightningModule):
             
             if isinstance(self.trainer.datamodule, CenterNetDataModule):
                 self.trainer.datamodule.disable_augmentations()
+
