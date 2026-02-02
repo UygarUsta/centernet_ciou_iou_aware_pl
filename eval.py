@@ -143,7 +143,7 @@ def evaluate_coco(model, device, val_data_path, coco_gt_path,classes,input_shape
                     # Post-process (Rescale boxes to original image size)
                     # We pass single-item lists to match expected signature
                     image_shape = np.array([orig_h, orig_w])
-                    results_boxes = postprocess([output], True, image_shape, input_shape, True, nms_threshold)
+                    results_boxes = postprocess([output], False, image_shape, input_shape, True, nms_threshold) #NMS set to False (Higher map when set to False), Letterbox True
                     
                     # Format for JSON
                     for box in results_boxes[0]:
