@@ -6,10 +6,11 @@ This repository contains a reimplementation of a custom CenterNet model with var
 | model | input_size | mAP@0.5:0.95 | mAP@0.5 | mAP@0.75 |
 |-------|------------|-----|---------|----------|
 | MBv4 Centernet Stride 4 | 512x512 | 0.238 | 0.403 | 0.244 |
+| CenterNet-HardNet68 | 512x512 | 0.392 | 0.558 | 0.422314 |
 
 ## Features
 
-- **Model Backbone**: MobileNetV4 with Feature Pyramid Network (FPN).
+- **Model Backbone**: MobileNetV4 with Feature Pyramid Network (FPN) | CenterNet-HardNet 68
 - **Loss Function**: CIOU (Complete Intersection over Union) Loss.
 - **IOU Aware Head**: IOU aware head for better predictions.
 - **Augmentation Techniques**:
@@ -36,6 +37,8 @@ DataRoot/
 - Each image should have a corresponding annotation file in `.xml` format (e.g., Pascal VOC format).
 
 ---
+
+- Training with COCO annotation is also supported. Please check train_lightning.py for arguments.
 
 ## Important Notes
 
@@ -79,6 +82,7 @@ This project is inspired by the original CenterNet paper and aims to provide a c
 - https://github.com/xingyizhou/CenterNet
 - https://github.com/610265158/mobile_centernet
 - https://github.com/bubbliiiing/centernet-pytorch
+- https://github.com/PingoLH/CenterNet-HarDNet
 ---
 
 ## License
