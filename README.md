@@ -6,7 +6,7 @@ This repository contains a reimplementation of a custom CenterNet model with var
 | model | input_size | mAP@0.5:0.95 | mAP@0.5 | mAP@0.75 |
 |-------|------------|-----|---------|----------|
 | MBv4 Centernet Stride 4 | 512x512 | 0.238 | 0.403 | 0.244 |
-| CenterNet-HardNet68 | 512x512 | 0.392 | 0.558 | 0.422314 |
+| CenterNet-HardNet68 | 512x512 | 0.392 | 0.558 | 0.422 |
 
 ## Features
 
