@@ -57,7 +57,7 @@ def main(args):
             for cls in classes:
                 f.write(f"{cls}\n")
     else:
-        val_outputs = xml_to_coco_json(os.path.join(args.data_dir,"val_images"), 'val_output_coco.json')
+        val_outputs = xml_to_coco_json(os.path.join(args.data_dir,"valid"), 'val_output_coco.json')
         cocoGt = COCO(args.coco_annotation_path)
         classes = []
         for (i, v) in cocoGt.cats.items():
@@ -240,3 +240,4 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     main(args)
+
