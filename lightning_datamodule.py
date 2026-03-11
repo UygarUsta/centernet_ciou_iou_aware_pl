@@ -141,7 +141,7 @@ class CenterNetDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             collate_fn=centernet_dataset_collate,
             worker_init_fn=partial(worker_init_fn, rank=0, seed=self.seed),
             persistent_workers=True
@@ -155,4 +155,5 @@ class CenterNetDataModule(pl.LightningDataModule):
             
         if target is not None:
             target.mosaic = False
+
             target.mixup = False
