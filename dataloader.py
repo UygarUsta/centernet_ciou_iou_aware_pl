@@ -3,7 +3,8 @@ import math
 import cv2
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 from torch.utils.data.dataset import Dataset
 from data_utils import extract_coordinates
 from gaussan_functions import gaussian2D,gaussian_radius,draw_gaussian
@@ -420,4 +421,5 @@ def centernet_dataset_collate(batch):
     batch_regs      = torch.from_numpy(np.array(batch_regs)).type(torch.FloatTensor)
     batch_reg_masks = torch.from_numpy(np.array(batch_reg_masks)).type(torch.FloatTensor)
     return imgs, batch_hms, batch_whs, batch_regs, batch_reg_masks
+
 
