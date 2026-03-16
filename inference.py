@@ -5,35 +5,37 @@ from infer_utils import infer_image,load_model,hardnet_load_model
 from glob import glob
 import os
 import time 
+from PIL import Image,ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # cv2.setNumThreads(0)
 # cv2.ocl.setUseOpenCL(False)
 
 video = False
-half = False 
+half = True 
 cpu = False 
 trace = False 
 openvino_exp = False 
 openvino_int8 = False 
 export_onnx = False 
-save_xml = False
+save_annotations = True
+nms_ops = True
 
-
-f = open("classes_coco.txt","r").readlines()
+f = open("classes_ekar.txt","r").readlines()
 classes = []
 for i in f:
     classes.append(i.strip('\n'))
 
 print(classes)
 
-input_height = 512
-input_width = 512
+input_height = 768
+input_width = 768
 stride = 4
-folder =  r"C:\Users\uygar.usta\Desktop\codes\focal_instance_segmentation\valid" 
-video_path = "G:/vlc-record-2025-01-22-11h07m03s-2_10.34.09_novis_output.avi-.avi" 
-model_path = r"coco_mbv4_ciou_aware_best_model_mAP_0.2379.pth"
+folder =  r"C:\Users\uygar.usta\Desktop\evrak_detection\test\21\veraset_ilanı"  #r"C:\Users\uygar.usta\Desktop\codes\focal_instance_segmentation\valid" 
+video_path = 0
+model_path = r"ekar_768_best_model_mAP_0.8859.pth"
 device = "cuda"
-model_type = "mbv4_timm"
+model_type = "hardnet"
 
 if model_type == "mbv4_timm":
     conf = 0.35
@@ -43,9 +45,9 @@ if model_type == "mbv4_timm":
         model = load_model(model,model_path)
 
 if model_type == "hardnet":
-    conf = 0.005
+    conf = 0.35
     from hardnet import get_pose_net
-    model = get_pose_net(85,{"hm":len(classes),"wh":2,"offset":2,"iou":1}) 
+    model = get_pose_net(68,{"hm":len(classes),"wh":2,"offset":2,"iou":1}) 
     if model_path.endswith(".ckpt"):
         #model = hardnet_load_model(model,model_path)
         checkpoint = torch.load(model_path)
@@ -66,6 +68,7 @@ model.cuda()
 #model = torch.compile(model) #experimental
 
 model.eval()
+
 
 
 if cpu:
@@ -167,84 +170,87 @@ if not cpu:
     model.cuda()
     
 
-if save_xml :
-    if not os.path.isdir(os.path.join(folder,"annos")):
-        os.mkdir(os.path.join(folder,"annos"))
-    
+if save_annotations :
+    import json 
     import xml.etree.ElementTree as ET
     from xml.dom import minidom
     class Converter():
-        def __init__(self,save_folder):
+        def __init__(self, save_folder):
             self.save_folder = save_folder
-        def __call__(self,path,image_size,bboxes):
-            annotation = self.create_pascal_voc_xml(path,image_size,bboxes)
-            with open(self.save_folder+"/"+path.split(".")[0]+".xml","w") as f:
-                f.write(annotation)
-        def create_pascal_voc_xml(self,image_name, image_size, bboxes):
+            # Ensure the directory exists before writing
+            if not os.path.exists(self.save_folder):
+                os.makedirs(self.save_folder)
+
+        def __call__(self, path, image_size, bboxes, format="json"):
             """
-            Creates Pascal VOC XML annotation for an image.
-            
-            Parameters:
-                image_name (str): Name of the image file (e.g., 'image1.jpg').
-                image_size (tuple): (width, height, depth) of the image.
-                bboxes (list): List of bounding boxes in the format [[xmin, ymin, xmax, ymax, class]].
-            
-            Returns:
-                str: XML string in Pascal VOC format.
+            Processes and writes the file.
+            format: "json" for LabelMe, "xml" for Pascal VOC
             """
+            # Get filename without extension (e.g., 'cat.jpg' -> 'cat')
+            file_id = os.path.splitext(os.path.basename(path))[0]
             
-            # Initialize the XML structure
-            annotation = ET.Element("annotation")
-            
-            # Folder (optional, can be skipped or customized as needed)
-            folder = ET.SubElement(annotation, "folder")
-            folder.text = "images"
+            if format.lower() == "json":
+                self.save_json(file_id, path, image_size, bboxes)
+            else:
+                self.save_xml(file_id, path, image_size, bboxes)
 
-            # File name
-            filename = ET.SubElement(annotation, "filename")
-            filename.text = image_name
+        def save_json(self, file_id, image_name, image_size, bboxes):
+            """Generates and writes LabelMe JSON file."""
+            data = {
+                "version": "4.5.6",
+                "flags": {},
+                "shapes": [],
+                "imagePath": image_name,
+                "imageData": None,
+                "imageHeight": image_size[1],
+                "imageWidth": image_size[0]
+            }
 
-            # Size (image dimensions)
-            size = ET.SubElement(annotation, "size")
-            width = ET.SubElement(size, "width")
-            width.text = str(image_size[0])
-            height = ET.SubElement(size, "height")
-            height.text = str(image_size[1])
-            depth = ET.SubElement(size, "depth")
-            depth.text = str(image_size[2])
-
-            # Objects (bounding boxes)
             for bbox in bboxes:
                 xmin, ymin, xmax, ymax, obj_class = bbox
-                
-                obj = ET.SubElement(annotation, "object")
-                name = ET.SubElement(obj, "name")
-                name.text = obj_class
-                
-                pose = ET.SubElement(obj, "pose")
-                pose.text = "Unspecified"
-                
-                truncated = ET.SubElement(obj, "truncated")
-                truncated.text = "0"
-                
-                difficult = ET.SubElement(obj, "difficult")
-                difficult.text = "0"
-                
-                bndbox = ET.SubElement(obj, "bndbox")
-                xmin_elem = ET.SubElement(bndbox, "xmin")
-                xmin_elem.text = str(xmin)
-                ymin_elem = ET.SubElement(bndbox, "ymin")
-                ymin_elem.text = str(ymin)
-                xmax_elem = ET.SubElement(bndbox, "xmax")
-                xmax_elem.text = str(xmax)
-                ymax_elem = ET.SubElement(bndbox, "ymax")
-                ymax_elem.text = str(ymax)
+                shape = {
+                    "label": obj_class,
+                    "points": [[float(xmin), float(ymin)], [float(xmax), float(ymax)]],
+                    "group_id": None,
+                    "shape_type": "rectangle",
+                    "flags": {}
+                }
+                data["shapes"].append(shape)
+
+            file_path = os.path.join(self.save_folder, f"{file_id}.json")
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            print(f"Successfully saved: {file_path}")
+
+        def save_xml(self, file_id, image_name, image_size, bboxes):
+            """Generates and writes Pascal VOC XML file."""
+            annotation = ET.Element("annotation")
+            ET.SubElement(annotation, "filename").text = image_name
             
-            # Prettify XML
+            size = ET.SubElement(annotation, "size")
+            ET.SubElement(size, "width").text = str(image_size[0])
+            ET.SubElement(size, "height").text = str(image_size[1])
+            ET.SubElement(size, "depth").text = str(image_size[2])
+
+            for bbox in bboxes:
+                xmin, ymin, xmax, ymax, obj_class = bbox
+                obj = ET.SubElement(annotation, "object")
+                ET.SubElement(obj, "name").text = obj_class
+                bndbox = ET.SubElement(obj, "bndbox")
+                ET.SubElement(bndbox, "xmin").text = str(xmin)
+                ET.SubElement(bndbox, "ymin").text = str(ymin)
+                ET.SubElement(bndbox, "xmax").text = str(xmax)
+                ET.SubElement(bndbox, "ymax").text = str(ymax)
+
+            # Prettify and write
             xml_str = ET.tostring(annotation, encoding="utf-8")
-            parsed_xml = minidom.parseString(xml_str)
-            return parsed_xml.toprettyxml(indent="  ")
-    convert = Converter(os.path.join(folder,"annos"))
+            pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+            
+            file_path = os.path.join(self.save_folder, f"{file_id}.xml")
+            with open(file_path, "w", encoding='utf-8') as f:
+                f.write(pretty_xml)
+            print(f"Successfully saved: {file_path}")
+    convert = Converter(folder)
     
 
 
@@ -255,7 +261,8 @@ if video:
         ret,img = cap.read()
         #img = cv2.resize(img,(1280,720))
         img = img[...,::-1]
-        image,annos = infer_image(model,img,classes,stride,conf,half,input_shape=(input_height,input_width),cpu=cpu,openvino_exp=openvino_exp)
+        img = Image.fromarray(img)
+        image,annos = infer_image(model,img,classes,stride,conf,half,input_shape=(input_height,input_width),cpu=cpu,openvino_exp=openvino_exp,nms=nms_ops)
         #image = cv2.resize(image,(1280,720))
         #print(annos)
         cv2.imshow("ciou_iou_aware_centernet",image[...,::-1])
@@ -264,19 +271,29 @@ if video:
 
 
 else:
-    files = glob(folder+"/*.jpg") + glob(folder+"/*.png") + glob(folder+"/*.JPG")
-    for i in files:
-        print(i)
-        if save_xml:
+    VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    files = glob(os.path.join(folder, "*"))
+    file_len = len(files)
+    for ind, file_path in enumerate(files):
+        # Splitext returns (root, ext) -> e.g., ('/path/to/image', '.JPG')
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        if ext not in VALID_EXTENSIONS:
+            continue
+        
+        print(f"[{ind}/{file_len}]")
+        print(f"Processing: {file_path}")
+        if save_annotations:
             annotations = []
-        image,annos = infer_image(model,i,classes,stride,conf,half,input_shape=(input_height,input_width),cpu=cpu,openvino_exp=openvino_exp)
-        if save_xml:
+        image,annos = infer_image(model,file_path,classes,stride,conf,half,input_shape=(input_height,input_width),cpu=cpu,openvino_exp=openvino_exp,nms=nms_ops)
+        if save_annotations:
             for b in annos:
                 xmin = b[0]
                 ymin = b[1]
                 xmax = b[2]
                 ymax = b[3]
-                class_ = b[4]
+                class_score = b[4]
+                class_ = class_score.split(" ")[0]
                 annotations.append([xmin,ymin,xmax,ymax,class_])
         if image.shape[1] > 1280: 
             image = cv2.resize(image,(1280,720))
@@ -284,8 +301,8 @@ else:
         ch = cv2.waitKey(0)
         if ch == ord("q"): break
         if ch == ord("s"): 
-            if save_xml:
-                size_ = cv2.imread(i).shape
-                convert(i.split("\\")[-1],size_,annotations)
+            if save_annotations:
+                size_ = cv2.imread(file_path).shape
+                convert(file_path.split("\\")[-1],size_,annotations,'json')
             else:
                 continue
